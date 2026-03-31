@@ -6,7 +6,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from ncatbot.core import GroupMessage
+from ncatbot.event.qq import GroupMessageEvent
 
 
 class BotDatabase:
@@ -66,7 +66,7 @@ class BotDatabase:
             )
             self._conn.commit()
 
-    def record_group_message(self, msg: GroupMessage) -> None:
+    def record_group_message(self, msg: GroupMessageEvent) -> None:
         group_id = str(msg.group_id)
         user_id = str(msg.user_id)
         message_id = str(getattr(msg, "message_id", "") or "")

@@ -6,8 +6,9 @@ import traceback
 from pathlib import Path
 from uuid import uuid4
 
-from ncatbot.core import GroupMessage
-from ncatbot.plugin_system import NcatBotPlugin, filter_registry
+from ncatbot.core import registrar
+from ncatbot.event.qq import GroupMessageEvent
+from ncatbot.plugin import NcatBotPlugin
 
 from .bot_app.command_processor import CommandProcessor
 from .bot_app.db_manager import BotDatabase
@@ -29,7 +30,6 @@ class _PluginBotProxy:
 class Btd6BotPlugin(NcatBotPlugin):
     name = "btd6bot_plugin"
     version = "0.1.0"
-    dependencies: dict[str, str] = {}
     author = "btd6bot"
     description = "BTD6 群聊智能插件：支持路由决策、多轮工具编排、知识库检索、活动资讯/排行榜与消息持久化。"
 
@@ -52,13 +52,6 @@ class Btd6BotPlugin(NcatBotPlugin):
         _set_if_relative("BOT_DB_FILE", "data/bot_data.db", force=True)
 
     async def on_load(self) -> None:
-        self._plugin_enabled = os.getenv("BOT_PLUGIN_ENABLED", "false").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-
         self._prepare_plugin_paths()
 
         self._settings: AppSettings = load_settings()
@@ -87,18 +80,14 @@ class Btd6BotPlugin(NcatBotPlugin):
             stage="plugin.loaded",
             trace_id=lifecycle_trace_id,
             plugin=self.name,
-            plugin_enabled=self._plugin_enabled,
             target_groups=list(self._settings.target_group_ids),
         )
 
     async def on_close(self) -> None:
         log_flow(stage="plugin.closed", trace_id=f"{self.name}.lifecycle", plugin=self.name)
 
-    @filter_registry.group_filter
-    async def on_group_message(self, msg: GroupMessage):
-        if not self._plugin_enabled:
-            return
-
+    @registrar.qq.on_group_message()
+    async def on_group_message(self, msg: GroupMessageEvent):
         trace_id = uuid4().hex[:12]
         log_flow(
             stage="receiver.raw_message",

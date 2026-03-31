@@ -5,7 +5,8 @@ import traceback
 from pathlib import Path
 from uuid import uuid4
 
-from ncatbot.core import BotClient, GroupMessage
+from ncatbot.core import BotClient
+from ncatbot.event.qq import GroupMessageEvent
 
 from .command_processor import CommandProcessor
 from .db_manager import BotDatabase
@@ -39,7 +40,7 @@ def create_bot() -> BotClient:
     bot_enabled = True
 
     @bot.group_event()
-    async def on_group_message(msg: GroupMessage):
+    async def on_group_message(msg: GroupMessageEvent):
         nonlocal bot_enabled
         trace_id = uuid4().hex[:12]
         log_flow(

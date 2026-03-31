@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from ncatbot.core import GroupMessage
+from ncatbot.event.qq import GroupMessageEvent
 
 from .db_manager import BotDatabase
 from .protocol import AdminControlPayload, EventPayload
@@ -22,7 +22,7 @@ class GroupMessageReceiver:
     def is_proactive_chat_enabled(self) -> bool:
         return self._proactive_chat_enabled
 
-    def should_accept(self, msg: GroupMessage) -> bool:
+    def should_accept(self, msg: GroupMessageEvent) -> bool:
         if str(msg.group_id) not in self._settings.target_group_ids:
             return False
         if self._settings.bot_qq and str(msg.user_id) == self._settings.bot_qq:
@@ -31,14 +31,14 @@ class GroupMessageReceiver:
             return False
         return True
 
-    def should_track_message(self, msg: GroupMessage) -> bool:
+    def should_track_message(self, msg: GroupMessageEvent) -> bool:
         if str(msg.group_id) not in self._settings.target_group_ids:
             return False
         if self._settings.bot_qq and str(msg.user_id) == self._settings.bot_qq:
             return False
         return True
 
-    def parse_admin_control(self, msg: GroupMessage) -> AdminControlPayload:
+    def parse_admin_control(self, msg: GroupMessageEvent) -> AdminControlPayload:
         raw_text = (msg.raw_message or "").strip()
         action = self._parse_control_action(raw_text)
         if not action:
@@ -76,7 +76,7 @@ class GroupMessageReceiver:
             "reason": "authorized",
         }
 
-    def sync_message_to_db(self, msg: GroupMessage) -> None:
+    def sync_message_to_db(self, msg: GroupMessageEvent) -> None:
         if self._db is None:
             return
         self._db.record_group_message(msg)
@@ -91,7 +91,7 @@ class GroupMessageReceiver:
             text = text[len(self._settings.trigger_prefix) :].strip()
         return text
 
-    def build_event_payload(self, msg: GroupMessage, text: str) -> EventPayload:
+    def build_event_payload(self, msg: GroupMessageEvent, text: str) -> EventPayload:
         sender = getattr(msg, "sender", None)
         raw_text = str(msg.raw_message or "")
         mentioned_qqs = self._extract_mentioned_qqs(raw_text)
@@ -118,7 +118,7 @@ class GroupMessageReceiver:
         text = raw_text or ""
         return re.findall(r"\[CQ:at,qq=(\d+)\]", text)
 
-    def _is_admin_sender(self, msg: GroupMessage) -> bool:
+    def _is_admin_sender(self, msg: GroupMessageEvent) -> bool:
         sender = getattr(msg, "sender", None)
         role = str(getattr(sender, "role", "") or "").lower()
         return role in {"owner", "admin"}

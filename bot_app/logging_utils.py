@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from logging.handlers import RotatingFileHandler
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +11,7 @@ from typing import Any
 _LOGGER_NAME = "bot.flow"
 _FLOW_LOG_MAX_BYTES = 10 * 1024 * 1024
 _FLOW_LOG_BACKUP_COUNT = 10
+_LOG_TIMEZONE = timezone(timedelta(hours=8))
 
 
 def configure_flow_logger(log_file: str) -> logging.Logger:
@@ -55,7 +56,7 @@ def log_flow(stage: str, trace_id: str, **fields: Any) -> None:
         return
 
     payload = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(_LOG_TIMEZONE).isoformat(),
         "trace_id": trace_id,
         "stage": stage,
         **{k: _to_jsonable(v) for k, v in fields.items()},
