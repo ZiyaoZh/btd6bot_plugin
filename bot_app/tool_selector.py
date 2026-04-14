@@ -14,7 +14,8 @@ class ToolSelector:
             "chat_summary": ["summarize_recent_messages"],
             "script_manual": ["script_manual_query"],
             "game_knowledge": ["search_game_knowledge", "read_game_knowledge_file"],
-            "game_news": ["fetch_latest_game_news", "get_activity_detail", "get_activity_leaderboard"],
+            "game_news": ["get_activity_detail", "get_activity_leaderboard", "get_collection_event_info"],
+            "mini_game": ["simulate_monkey_box_opening"],
         }
 
         self._tool_aliases = {
@@ -34,10 +35,20 @@ class ToolSelector:
             "search_game_knowledge": "game_knowledge",
             "游戏知识查看": "game_knowledge",
             "game_news": "game_news",
-            "fetch_latest_game_news": "game_news",
             "get_activity_detail": "game_news",
             "get_activity_leaderboard": "game_news",
+            "get_collection_event_info": "game_news",
+            "collection_event": "game_news",
+            "collection_schedule": "game_news",
+            "收集活动查询": "game_news",
             "游戏最新资讯获取": "game_news",
+            "mini_game": "mini_game",
+            "simulate_monkey_box_opening": "mini_game",
+            "open_monkey_box": "mini_game",
+            "game_box_opening": "mini_game",
+            "开箱模拟": "mini_game",
+            "收集开箱": "mini_game",
+            "猴子开箱": "mini_game",
         }
 
     async def load_tool_guides(

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+import sys
 import traceback
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from ncatbot.core import registrar
@@ -32,6 +35,60 @@ class Btd6BotPlugin(NcatBotPlugin):
     version = "0.1.0"
     author = "btd6bot"
     description = "BTD6 群聊智能插件：支持路由决策、多轮工具编排、知识库检索、活动资讯/排行榜与消息持久化。"
+
+    def _build_refresh_service_context(self) -> tuple[Any, dict[str, dict[str, str]], Any] | None:
+        api_root = Path(__file__).resolve().parent / "btd6_api_processor"
+        root_text = str(api_root)
+        if root_text not in sys.path:
+            sys.path.insert(0, root_text)
+
+        try:
+            from api_raw_fetcher import ApiClient  # type: ignore
+            from btd6_core.common import parse_translation_tables  # type: ignore
+            from btd6_core.update_service import update_all_data  # type: ignore
+        except Exception as exc:
+            log_flow(
+                stage="game_news.refresh.init_failed",
+                trace_id=f"{self.name}.refresh",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            return None
+
+        api_key = os.getenv("NK_API_KEY", "").strip() or None
+        client = ApiClient(api_key=api_key)
+        trans = parse_translation_tables(api_root / "translate.md")
+        return client, trans, update_all_data
+
+    async def _run_game_news_refresh_loop(self) -> None:
+        context = self._build_refresh_service_context()
+        if context is None:
+            return
+
+        client, trans, update_all_data = context
+        interval = self._settings.game_news_refresh_interval_seconds
+        trace_id = f"{self.name}.refresh"
+
+        while True:
+            try:
+                await asyncio.to_thread(update_all_data, client, trans)
+                log_flow(
+                    stage="game_news.refresh.success",
+                    trace_id=trace_id,
+                    interval_seconds=interval,
+                )
+            except asyncio.CancelledError:
+                log_flow(stage="game_news.refresh.stopped", trace_id=trace_id)
+                raise
+            except Exception as exc:
+                log_flow(
+                    stage="game_news.refresh.failed",
+                    trace_id=trace_id,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+
+            await asyncio.sleep(interval)
 
     def _prepare_plugin_paths(self) -> None:
         plugin_root = Path(__file__).resolve().parent
@@ -74,6 +131,10 @@ class Btd6BotPlugin(NcatBotPlugin):
             command_guide_dir=self._settings.command_guide_dir,
         )
         self._bot_enabled = True
+        self._refresh_task = asyncio.create_task(
+            self._run_game_news_refresh_loop(),
+            name=f"{self.name}.game_news_refresh",
+        )
         lifecycle_trace_id = f"{self.name}.lifecycle"
 
         log_flow(
@@ -81,9 +142,17 @@ class Btd6BotPlugin(NcatBotPlugin):
             trace_id=lifecycle_trace_id,
             plugin=self.name,
             target_groups=list(self._settings.target_group_ids),
+            refresh_interval_seconds=self._settings.game_news_refresh_interval_seconds,
         )
 
     async def on_close(self) -> None:
+        refresh_task = getattr(self, "_refresh_task", None)
+        if refresh_task is not None:
+            refresh_task.cancel()
+            try:
+                await refresh_task
+            except asyncio.CancelledError:
+                pass
         log_flow(stage="plugin.closed", trace_id=f"{self.name}.lifecycle", plugin=self.name)
 
     @registrar.qq.on_group_message()
@@ -254,8 +323,12 @@ class Btd6BotPlugin(NcatBotPlugin):
                 response_type = "text"
                 image_path = ""
 
+            reply_for_memory = final_reply
             total_tokens = self._llm.pop_trace_total_tokens(trace_id)
-            final_reply = _append_token_cost_line(final_reply, total_tokens, self._settings.max_reply_chars)
+            final_reply = _append_token_cost_line(reply_for_memory, total_tokens, self._settings.max_reply_chars)
+
+            if intent["target"] in {"tool_selector", "command_processor"}:
+                await self._llm_processor.record_tool_turn(event_payload, reply_for_memory, trace_id=trace_id)
 
             if response_type == "image" and image_path:
                 await self._sender.send_group_image(

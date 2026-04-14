@@ -19,4 +19,4 @@
 - 返回路径默认位于 btd6_knowledge_base/wiki_data_second_cleaned/btd6。
 
 ## 示例
-- {"module":"llm_processor","target":"command_processor","intent":"search_game_knowledge","arguments":{"top_n":5,"query":"dart"},"reply":"","reason":"检索游戏知识"}
+- {"module":"llm_processor","target":"command_processor","intent":"search_game_knowledge","arguments":{"top_n":5,"query":"飞镖猴"},"reply":"","reason":"检索游戏知识"}

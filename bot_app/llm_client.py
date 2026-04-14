@@ -26,30 +26,72 @@ class LLMClient:
         trace_id: str = "",
         purpose: str = "chat",
     ) -> str:
-        max_attempts = self._settings.llm_max_retries + 1
+        per_model_attempts = self._settings.llm_max_retries + 1
         last_error: Exception | None = None
+        models = list(self._settings.models)
+        total_attempts = per_model_attempts * max(1, len(models))
+        global_attempt = 0
 
-        for attempt in range(1, max_attempts + 1):
-            try:
-                return await asyncio.to_thread(self._chat_sync, messages, trace_id, purpose)
-            except LLMRequestError as exc:
-                last_error = exc
-                if trace_id:
-                    log_flow(
-                        stage="llm.retry",
-                        trace_id=trace_id,
-                        purpose=purpose,
-                        attempt=attempt,
-                        max_attempts=max_attempts,
-                        error=str(exc),
+        for model_index, model in enumerate(models, start=1):
+            for model_attempt in range(1, per_model_attempts + 1):
+                global_attempt += 1
+                try:
+                    return await asyncio.to_thread(
+                        self._chat_sync,
+                        messages,
+                        trace_id,
+                        purpose,
+                        model,
+                        self._settings.api_base_url,
+                        self._settings.api_key,
+                        0.7,
+                        True,
                     )
-                if attempt >= max_attempts:
-                    break
-                await asyncio.sleep(min(0.5 * attempt, 2.0))
+                except LLMRequestError as exc:
+                    last_error = exc
+                    if trace_id:
+                        log_flow(
+                            stage="llm.retry",
+                            trace_id=trace_id,
+                            purpose=purpose,
+                            model=model,
+                            model_index=model_index,
+                            model_count=len(models),
+                            model_attempt=model_attempt,
+                            model_max_attempts=per_model_attempts,
+                            attempt=global_attempt,
+                            max_attempts=total_attempts,
+                            error=str(exc),
+                        )
+                    if model_attempt >= per_model_attempts:
+                        break
+                    await asyncio.sleep(min(0.5 * model_attempt, 2.0))
 
         if last_error is not None:
             raise last_error
         raise LLMRequestError("LLM 请求失败")
+
+    async def chat_with_override(
+        self,
+        messages: list[dict[str, str]],
+        trace_id: str,
+        purpose: str,
+        model: str,
+        api_base_url: str,
+        api_key: str,
+        temperature: float = 0.7,
+    ) -> str:
+        return await asyncio.to_thread(
+            self._chat_sync,
+            messages,
+            trace_id,
+            purpose,
+            model,
+            api_base_url,
+            api_key,
+            float(temperature),
+            True,
+        )
 
     def pop_trace_total_tokens(self, trace_id: str) -> int:
         if not trace_id:
@@ -57,12 +99,22 @@ class LLMClient:
         with self._token_lock:
             return int(self._trace_token_totals.pop(trace_id, 0) or 0)
 
-    def _chat_sync(self, messages: list[dict[str, str]], trace_id: str, purpose: str) -> str:
-        url = f"{self._settings.api_base_url}/chat/completions"
+    def _chat_sync(
+        self,
+        messages: list[dict[str, str]],
+        trace_id: str,
+        purpose: str,
+        model: str,
+        api_base_url: str,
+        api_key: str,
+        temperature: float,
+        accumulate_tokens: bool,
+    ) -> str:
+        url = f"{api_base_url}/chat/completions"
         payload = {
-            "model": self._settings.model,
+            "model": model,
             "messages": messages,
-            "temperature": 0.7,
+            "temperature": temperature,
         }
 
         if trace_id:
@@ -70,8 +122,8 @@ class LLMClient:
                 stage="llm.request",
                 trace_id=trace_id,
                 purpose=purpose,
-                model=self._settings.model,
-                api_base_url=self._settings.api_base_url,
+                model=model,
+                api_base_url=api_base_url,
                 payload=payload,
             )
 
@@ -83,7 +135,7 @@ class LLMClient:
             method="POST",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._settings.api_key}",
+                "Authorization": f"Bearer {api_key}",
             },
         )
 
@@ -100,7 +152,7 @@ class LLMClient:
             except (TypeError, ValueError):
                 total_tokens = 0
 
-            if trace_id and total_tokens > 0:
+            if trace_id and total_tokens > 0 and accumulate_tokens:
                 with self._token_lock:
                     self._trace_token_totals[trace_id] = self._trace_token_totals.get(trace_id, 0) + total_tokens
 

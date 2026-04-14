@@ -13,7 +13,7 @@ class AppSettings:
     target_group_ids: Tuple[str, ...]
     api_key: str
     api_base_url: str = "https://api.openai.com/v1"
-    model: str = "gpt-4o-mini"
+    models: Tuple[str, ...] = ("gpt-4o-mini",)
     system_prompt: str = "你是一个友好、简洁、乐于助人的群聊机器人。"
     router_tool_hints_prompt: str = ""
     request_timeout: int = 30
@@ -27,8 +27,15 @@ class AppSettings:
     command_guide_dir: str = "command_skills"
     max_tool_rounds: int = 4
     proactive_chat_enabled: bool = True
+    game_news_refresh_interval_seconds: int = 600
     db_file: str = "data/bot_data.db"
     flow_log_file: str = "logs/network.log"
+    context_compact_max_chars: int = 100000
+    context_compact_keep_recent_turns: int = 10
+    context_compact_summary_max_chars: int = 360
+    context_compact_model: str = ""
+    context_compact_api_base_url: str = ""
+    context_compact_api_key: str = ""
 
 
 def _read_prompt_from_file(path: Path) -> str:
@@ -54,6 +61,14 @@ def _load_env_file(path: Path) -> None:
         os.environ.setdefault(key, value)
 
 
+def _parse_models(raw: str) -> Tuple[str, ...]:
+    items = [part.strip() for part in (raw or "").split(",") if part.strip()]
+    if not items:
+        return ("gpt-4o-mini",)
+    # Keep order and remove duplicates.
+    return tuple(dict.fromkeys(items))
+
+
 def load_settings(env_path: str = ".env") -> AppSettings:
     _load_env_file(Path(env_path))
 
@@ -76,7 +91,11 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         raise ValueError("缺少环境变量 LLM_API_KEY")
 
     api_base_url = os.getenv("LLM_API_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
-    model = os.getenv("LLM_MODEL", "gpt-4o-mini").strip()
+    models_raw = os.getenv("LLM_MODELS", "").strip()
+    if not models_raw:
+        # Backward compatible: old single-model env var can also be comma-separated.
+        models_raw = os.getenv("LLM_MODEL", "gpt-4o-mini").strip()
+    models = _parse_models(models_raw)
     prompt_file_raw = os.getenv("LLM_SYSTEM_PROMPT_FILE", os.getenv("SYSTEM_PROMPT_FILE", "")).strip()
     if prompt_file_raw:
         prompt_path = Path(prompt_file_raw)
@@ -114,8 +133,15 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         "yes",
         "on",
     }
+    game_news_refresh_interval_seconds = int(os.getenv("BOT_GAME_NEWS_REFRESH_INTERVAL_SECONDS", "600"))
     db_file = os.getenv("BOT_DB_FILE", "data/bot_data.db").strip() or "data/bot_data.db"
     flow_log_file = os.getenv("BOT_FLOW_LOG_FILE", "logs/network.log").strip() or "logs/network.log"
+    context_compact_max_chars = int(os.getenv("LLM_CONTEXT_COMPACT_MAX_CHARS", "100000"))
+    context_compact_keep_recent_turns = int(os.getenv("LLM_CONTEXT_COMPACT_KEEP_RECENT_TURNS", "10"))
+    context_compact_summary_max_chars = int(os.getenv("LLM_CONTEXT_COMPACT_SUMMARY_MAX_CHARS", "360"))
+    context_compact_model = os.getenv("LLM_CONTEXT_COMPACT_MODEL", "").strip()
+    context_compact_api_base_url = os.getenv("LLM_CONTEXT_COMPACT_API_BASE_URL", "").strip()
+    context_compact_api_key = os.getenv("LLM_CONTEXT_COMPACT_API_KEY", "").strip()
 
     return AppSettings(
         env_file=str(Path(env_path).resolve()),
@@ -123,7 +149,7 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         target_group_ids=tuple(dict.fromkeys(parsed_group_ids)),
         api_key=api_key,
         api_base_url=api_base_url,
-        model=model,
+        models=models,
         system_prompt=system_prompt,
         router_tool_hints_prompt=router_tool_hints_prompt,
         request_timeout=request_timeout,
@@ -137,6 +163,13 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         command_guide_dir=command_guide_dir,
         max_tool_rounds=max(1, max_tool_rounds),
         proactive_chat_enabled=proactive_chat_enabled,
+        game_news_refresh_interval_seconds=max(60, game_news_refresh_interval_seconds),
         db_file=db_file,
         flow_log_file=flow_log_file,
+        context_compact_max_chars=max(1000, context_compact_max_chars),
+        context_compact_keep_recent_turns=max(1, context_compact_keep_recent_turns),
+        context_compact_summary_max_chars=max(120, context_compact_summary_max_chars),
+        context_compact_model=context_compact_model,
+        context_compact_api_base_url=context_compact_api_base_url,
+        context_compact_api_key=context_compact_api_key,
     )

@@ -204,8 +204,12 @@ def create_bot() -> BotClient:
                 response_type = "text"
                 image_path = ""
 
+            reply_for_memory = final_reply
             total_tokens = llm.pop_trace_total_tokens(trace_id)
-            final_reply = _append_token_cost_line(final_reply, total_tokens, settings.max_reply_chars)
+            final_reply = _append_token_cost_line(reply_for_memory, total_tokens, settings.max_reply_chars)
+
+            if intent["target"] in {"tool_selector", "command_processor"}:
+                await llm_processor.record_tool_turn(event_payload, reply_for_memory, trace_id=trace_id)
 
             if response_type == "image" and image_path:
                 await sender.send_group_image(

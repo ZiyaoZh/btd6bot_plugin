@@ -12,5 +12,3 @@ important:
 - 结合 extra_prompt 指示，优先依据说明书作答，不要编造
 example_queries:
 - 这个程序怎么启动
-- 端口怎么配置
-- 机器人不回复怎么排查

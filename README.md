@@ -14,7 +14,7 @@
 - 多轮工具编排：支持在一次对话中连续调用多个工具指令，必要时切换工具集。
 - BTD6 游戏能力：
 	- 游戏知识检索与安全文件读取。
-	- 最新活动资讯刷新（update）。
+	- 活动数据后台定时刷新（集成 refresh-service）。
 	- 活动详情查询（race/boss/odyssey/daily）。
 	- 活动排行榜查询（race/boss-standard/boss-elite），支持图片输出。
 - 会话与数据持久化：
@@ -49,6 +49,7 @@
 ## 纯插件启动配置
 
 - 推荐配置模板：`.env.plugin.example`
+- 可选配置：`BOT_GAME_NEWS_REFRESH_INTERVAL_SECONDS`（默认 600 秒）
 - 启动命令：`python run_plugin_bot.py`
 
 ## 插件日志目录

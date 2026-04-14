@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from .context_manager import ContextManager
 from .llm_client import LLMClient
 from .logging_utils import log_flow
 from .memory import GroupChatMemory
@@ -15,16 +16,16 @@ class LLMMessageProcessor:
         llm: LLMClient,
         memory: GroupChatMemory,
         settings: AppSettings,
+        context_manager: ContextManager | None = None,
     ) -> None:
         self._llm = llm
         self._memory = memory
         self._settings = settings
+        self._context_manager = context_manager or ContextManager(llm=llm, settings=settings)
 
     def _style_constraint(self) -> str:
         return (
             "输出要求: 只输出纯文本，不要使用任何 Markdown 格式。"
-            "可以分点，但请使用普通编号如 1. 2. 3.二级编号如1) 2) 3)。"
-            "不要使用 #、*、-、```、` 这些 Markdown 标记。"
             "可以多用一些自然表情来增强语气。"
         )
 
@@ -36,7 +37,7 @@ class LLMMessageProcessor:
             "字段固定: module,target,intent,arguments,reply,reason。"
             "target 只能是 chat、tool_selector、noop。"
             "当 target=tool_selector 时，intent 必须是以下工具类型之一:"
-            "feature_overview(机器人功能查看)、activity_ranking(活跃度排行查看)、chat_summary(群聊总结)、script_manual(脚本说明书查看)、game_knowledge(游戏知识查看)、game_news(游戏最新资讯获取)。"
+            "feature_overview(机器人功能查看)、activity_ranking(活跃度排行查看)、chat_summary(群聊总结)、script_manual(脚本说明书查看)、game_knowledge(游戏知识查看)、game_news(游戏活动详情/排行榜/收集轮换查询)、mini_game(收集开箱模拟)。"
             "你在路由阶段只选工具类型，不直接选具体 command_processor 指令。"
             "规则:"
             "1) 先看 event.bot_mentioned。若为 true，不得返回 noop。"
@@ -66,7 +67,7 @@ class LLMMessageProcessor:
             "如信息不足，明确说明缺失点，不要编造。"
             "风格要求: 中文、自然、简洁、可读。"
             "输出要求: 只输出纯文本，不要使用任何 Markdown 格式。"
-            "可以分点，但请使用普通编号如 1. 2. 3.二级编号如1) 2) 3)。"
+            "可以分点，但请使用表情或'-'，不要使用数字编号。"
             "可以用一些自然表情来增强语气。"
         )
 
@@ -82,13 +83,13 @@ class LLMMessageProcessor:
             "若当前信息不足以回答用户，优先 call_command。"
             "当你判断“当前工具支持的指令都无法完成用户任务”时，应输出 target=tool_selector 并切换到新的工具类型，重新加载一套 skills。"
             "当 target=tool_selector 时，intent 必须是以下工具类型之一:"
-            "feature_overview(机器人功能查看)、activity_ranking(活跃度排行查看)、chat_summary(群聊总结)、script_manual(脚本说明书查看)、game_knowledge(游戏知识查看)、game_news(游戏最新资讯获取)。"
+            "feature_overview(机器人功能查看)、activity_ranking(活跃度排行查看)、chat_summary(群聊总结)、script_manual(脚本说明书查看)、game_knowledge(游戏知识查看)、game_news(游戏活动详情/排行榜/收集轮换查询)、mini_game(收集开箱模拟)。"
             "若已有信息足够回答用户，输出 final。"
             "输出final时注意:"
             "1) 抹除敏感信息如qq号、代码指令等。"
             "2) 风格要求: 中文、自然、简洁、可读。"
             "3) 只输出纯文本，不要使用任何 Markdown 格式。"
-            "4) 可以分点，但请使用普通编号如 1. 2. 3.二级编号1) 2) 3)。"
+            "4) 可以分点，但请使用表情或'-'，不要使用数字编号。"
             "5) 可以用一些自然表情来增强语气。"
         )
 
@@ -122,17 +123,60 @@ class LLMMessageProcessor:
             return ""
         return "\n".join(lines)
 
+    def _build_user_turn_text(self, event: EventPayload) -> str:
+        return json.dumps(
+            {
+                "identity": event["identity"],
+                "group_id": event["group_id"],
+                "user_id": event["user_id"],
+                "text": event["text"],
+                "bot_mentioned": event["bot_mentioned"],
+            },
+            ensure_ascii=False,
+        )
+
+    async def _build_memory_messages(
+        self,
+        system_prompt: str,
+        event: EventPayload,
+        user_payload: str,
+        trace_id: str = "",
+    ) -> list[dict[str, str]]:
+        await self._context_manager.compact_if_needed(
+            memory=self._memory,
+            group_id=event["group_id"],
+            user_id=event["user_id"],
+            trace_id=trace_id,
+        )
+        return self._memory.build_messages(
+            system_prompt=system_prompt,
+            group_id=event["group_id"],
+            user_id=event["user_id"],
+            user_text=user_payload,
+        )
+
+    async def record_tool_turn(self, event: EventPayload, assistant_text: str, trace_id: str = "") -> None:
+        user_text_for_memory = self._build_user_turn_text(event)
+        self._memory.append_turn(
+            group_id=event["group_id"],
+            user_id=event["user_id"],
+            user_text=user_text_for_memory,
+            assistant_text=(assistant_text or "").strip(),
+        )
+        await self._context_manager.compact_if_needed(
+            memory=self._memory,
+            group_id=event["group_id"],
+            user_id=event["user_id"],
+            trace_id=trace_id,
+        )
+
     async def plan_intent(self, event: EventPayload, trace_id: str = "") -> IntentPayload:
-        planner_messages = [
-            {
-                "role": "system",
-                "content": self._intent_router_prompt(),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(event, ensure_ascii=False),
-            },
-        ]
+        planner_messages = await self._build_memory_messages(
+            system_prompt=self._intent_router_prompt(),
+            event=event,
+            user_payload=json.dumps({"stage": "intent_router", "event": event}, ensure_ascii=False),
+            trace_id=trace_id,
+        )
 
         raw = await self._llm.chat(planner_messages, trace_id=trace_id, purpose="intent_planning")
         parsed = self._safe_parse_intent(raw)
@@ -146,20 +190,12 @@ class LLMMessageProcessor:
         return parsed
 
     async def chat_reply(self, event: EventPayload, trace_id: str = "") -> str:
-        user_text_for_llm = json.dumps(
-            {
-                "identity": event["identity"],
-                "group_id": event["group_id"],
-                "user_id": event["user_id"],
-                "text": event["text"],
-            },
-            ensure_ascii=False,
-        )
-        messages = self._memory.build_messages(
+        user_text_for_llm = self._build_user_turn_text(event)
+        messages = await self._build_memory_messages(
             system_prompt=f"{self._settings.system_prompt}\n\n{self._style_constraint()}",
-            group_id=event["group_id"],
-            user_id=event["user_id"],
-            user_text=user_text_for_llm,
+            event=event,
+            user_payload=user_text_for_llm,
+            trace_id=trace_id,
         )
         answer = await self._llm.chat(messages, trace_id=trace_id, purpose="chat_reply")
         answer = self._normalize_plain_text(answer)
@@ -170,6 +206,12 @@ class LLMMessageProcessor:
             user_id=event["user_id"],
             user_text=user_text_for_llm,
             assistant_text=answer,
+        )
+        await self._context_manager.compact_if_needed(
+            memory=self._memory,
+            group_id=event["group_id"],
+            user_id=event["user_id"],
+            trace_id=trace_id,
         )
         if trace_id:
             log_flow(
@@ -186,27 +228,24 @@ class LLMMessageProcessor:
         command_result: CommandResultPayload,
         trace_id: str = "",
     ) -> str:
-        messages = [
-            {
-                "role": "system",
-                "content": self._command_render_prompt(),
-            },
-            {
-                "role": "system",
-                "content": str(command_result.get("extra_prompt", "") or ""),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "event": event,
-                        "intent": intent,
-                        "command_result": command_result,
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-        ]
+        system_prompt = (
+            f"{self._command_render_prompt()}\n\n"
+            f"附加提示: {str(command_result.get('extra_prompt', '') or '')}"
+        )
+        messages = await self._build_memory_messages(
+            system_prompt=system_prompt,
+            event=event,
+            user_payload=json.dumps(
+                {
+                    "stage": "command_render",
+                    "event": event,
+                    "intent": intent,
+                    "command_result": command_result,
+                },
+                ensure_ascii=False,
+            ),
+            trace_id=trace_id,
+        )
         text = await self._llm.chat(messages, trace_id=trace_id, purpose="command_render")
         text = self._normalize_plain_text(text)
         if not text:
@@ -227,22 +266,19 @@ class LLMMessageProcessor:
         tool_history: list[dict],
         trace_id: str = "",
     ) -> dict:
-        messages = [
-            {
-                "role": "system",
-                "content": self._tool_planner_prompt(),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "event": event,
-                        "tool_history": tool_history,
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-        ]
+        messages = await self._build_memory_messages(
+            system_prompt=self._tool_planner_prompt(),
+            event=event,
+            user_payload=json.dumps(
+                {
+                    "stage": "tool_planning",
+                    "event": event,
+                    "tool_history": tool_history,
+                },
+                ensure_ascii=False,
+            ),
+            trace_id=trace_id,
+        )
 
         raw = await self._llm.chat(messages, trace_id=trace_id, purpose="tool_planning")
         parsed = self._safe_parse_json(raw)

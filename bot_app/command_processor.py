@@ -33,7 +33,10 @@ class CommandProcessor:
         self._kb_alias_file = self._kb_root_dir / "aliases.json"
         self._api_processor_root = self._runtime_root_dir / "btd6_api_processor"
         self._api_processor_cli = self._api_processor_root / "btd6_cli.py"
-        self._api_processor_output_dir = self._api_processor_root / "out"
+        self._api_processor_output_dir = self._api_processor_root / "output"
+        self._chat_monkey_root = self._runtime_root_dir / "ChatMonkeyTD"
+        self._chat_monkey_main = self._chat_monkey_root / "main.py"
+        self._chat_monkey_output_dir = self._chat_monkey_root / "output"
         self._manual_text_cache = ""
 
     async def execute(self, intent: IntentPayload, event: EventPayload) -> CommandResultPayload:
@@ -61,14 +64,17 @@ class CommandProcessor:
         if command_name in {"read_game_knowledge_file", "read_kb_file", "kb_read"}:
             return self._handle_read_game_knowledge_file(arguments)
 
-        if command_name in {"fetch_latest_game_news", "update_game_news", "refresh_game_news"}:
-            return self._handle_fetch_latest_game_news()
-
         if command_name in {"get_activity_detail", "activity_detail", "game_activity_detail"}:
             return self._handle_get_activity_detail(arguments)
 
         if command_name in {"get_activity_leaderboard", "activity_leaderboard", "game_leaderboard"}:
             return self._handle_get_activity_leaderboard(arguments)
+
+        if command_name in {"get_collection_event_info", "collection_event", "collection_schedule"}:
+            return self._handle_get_collection_event_info(arguments)
+
+        if command_name in {"simulate_monkey_box_opening", "open_monkey_box", "game_box_opening"}:
+            return self._handle_simulate_monkey_box_opening(arguments)
 
         return {
             "module": "command_processor",
@@ -145,12 +151,6 @@ class CommandProcessor:
                 "examples": ["检索游戏知识 top 5", "查找猴子塔升级机制相关资料"],
             },
             {
-                "name": "fetch_latest_game_news",
-                "aliases": ["update_game_news", "refresh_game_news", "刷新最新资讯"],
-                "description": "刷新并获取 BTD6 最新活动资讯（update 模式）",
-                "examples": ["刷新最新游戏资讯", "更新活动资讯"],
-            },
-            {
                 "name": "get_activity_detail",
                 "aliases": ["activity_detail", "活动详情"],
                 "description": "获取指定活动详情（detail 模式）",
@@ -163,6 +163,20 @@ class CommandProcessor:
                 "description": "获取指定活动排行榜（leaderboard image 模式）",
                 "arguments": {"leaderboard_type": "race|boss-standard|boss-elite"},
                 "examples": ["获取竞速排行榜", "获取精英 boss 排行榜"],
+            },
+            {
+                "name": "get_collection_event_info",
+                "aliases": ["collection_event", "collection_schedule", "收集活动", "收集轮换"],
+                "description": "获取收集活动轮换信息并发送图片（collection-event 模式）",
+                "arguments": {"only_upcoming": "true|false，可选，true 表示仅当前和未来轮换"},
+                "examples": ["查询收集活动", "看一下收集轮换图", "获取 upcoming 收集活动"],
+            },
+            {
+                "name": "simulate_monkey_box_opening",
+                "aliases": ["open_monkey_box", "game_box_opening", "开箱模拟", "收集开箱"],
+                "description": "模拟 BTD6 开箱并返回统计文档，箱子数量 <=50 时额外返回图片",
+                "arguments": {"box_type": "木头|青铜|白银|黄金|钻石", "box_count": "正整数"},
+                "examples": ["开 10 个钻石箱", "模拟青铜箱 30 个"],
             },
             {
                 "name": "chat",
@@ -181,35 +195,6 @@ class CommandProcessor:
             },
             "message": "功能列表已整理完成",
             "extra_prompt": "",
-            "response_type": "text",
-            "image_path": "",
-        }
-
-    def _handle_fetch_latest_game_news(self) -> CommandResultPayload:
-        ok, report, files, error_message = self._run_btd6_api_cli(mode="update")
-        if not ok:
-            return {
-                "module": "command_processor",
-                "ok": False,
-                "command": "fetch_latest_game_news",
-                "data": {"mode": "update", "generated_files": [], "report": ""},
-                "message": error_message,
-                "extra_prompt": "请简要说明刷新失败，并建议稍后重试。",
-                "response_type": "text",
-                "image_path": "",
-            }
-
-        return {
-            "module": "command_processor",
-            "ok": True,
-            "command": "fetch_latest_game_news",
-            "data": {
-                "mode": "update",
-                "generated_files": files,
-                "report": report,
-            },
-            "message": "最新游戏资讯已刷新完成",
-            "extra_prompt": "请基于 report 提炼本次更新重点，用简洁口吻回复。",
             "response_type": "text",
             "image_path": "",
         }
@@ -343,12 +328,242 @@ class CommandProcessor:
             "image_path": image_path,
         }
 
+    def _handle_get_collection_event_info(self, arguments: dict) -> CommandResultPayload:
+        raw_only_upcoming = str(arguments.get("only_upcoming", "") or "").strip().lower()
+        only_upcoming = raw_only_upcoming in {"1", "true", "yes", "on", "upcoming", "仅未来", "未来"}
+
+        ok, report, files, error_message = self._run_btd6_api_cli(
+            mode="collection-event",
+            collection_only_upcoming=only_upcoming,
+        )
+        if not ok:
+            return {
+                "module": "command_processor",
+                "ok": False,
+                "command": "get_collection_event_info",
+                "data": {
+                    "mode": "collection-event",
+                    "only_upcoming": only_upcoming,
+                    "generated_files": [],
+                },
+                "message": error_message,
+                "extra_prompt": "请说明收集活动查询失败并建议稍后重试。",
+                "response_type": "text",
+                "image_path": "",
+            }
+
+        image_path = ""
+        json_path = ""
+        for path_str in files:
+            lower = path_str.lower()
+            if lower.endswith(".png") and not image_path:
+                image_path = path_str
+            if lower.endswith(".json") and not json_path:
+                json_path = path_str
+
+        if not image_path:
+            return {
+                "module": "command_processor",
+                "ok": False,
+                "command": "get_collection_event_info",
+                "data": {
+                    "mode": "collection-event",
+                    "only_upcoming": only_upcoming,
+                    "generated_files": files,
+                    "report": report,
+                },
+                "message": "收集活动图片未生成成功。",
+                "extra_prompt": "请说明未找到收集活动图片，并建议稍后重试。",
+                "response_type": "text",
+                "image_path": "",
+            }
+
+        return {
+            "module": "command_processor",
+            "ok": True,
+            "command": "get_collection_event_info",
+            "data": {
+                "mode": "collection-event",
+                "only_upcoming": only_upcoming,
+                "generated_files": files,
+                "json_path": json_path,
+                "report": report,
+            },
+            "message": "收集活动轮换图片已生成",
+            "extra_prompt": "请给出一条简短说明，随后发送收集活动轮换图。",
+            "response_type": "image",
+            "image_path": image_path,
+        }
+
+    def _handle_simulate_monkey_box_opening(self, arguments: dict) -> CommandResultPayload:
+        raw_box_type = str(arguments.get("box_type", "") or arguments.get("box", "") or "").strip().lower()
+        box_alias_map = {
+            "木头": "木头",
+            "wood": "木头",
+            "青铜": "青铜",
+            "bronze": "青铜",
+            "白银": "白银",
+            "silver": "白银",
+            "黄金": "黄金",
+            "gold": "黄金",
+            "钻石": "钻石",
+            "diamond": "钻石",
+        }
+        box_type = box_alias_map.get(raw_box_type, "")
+        if not box_type:
+            return {
+                "module": "command_processor",
+                "ok": False,
+                "command": "simulate_monkey_box_opening",
+                "data": {
+                    "box_type": raw_box_type,
+                    "box_count": arguments.get("box_count", ""),
+                },
+                "message": "box_type 仅支持 木头、青铜、白银、黄金、钻石。",
+                "extra_prompt": "请提示用户给出合法箱子类型。",
+                "response_type": "text",
+                "image_path": "",
+            }
+
+        raw_box_count = arguments.get("box_count", arguments.get("count", ""))
+        try:
+            box_count = int(raw_box_count)
+        except (TypeError, ValueError):
+            box_count = 0
+
+        if box_count <= 0:
+            return {
+                "module": "command_processor",
+                "ok": False,
+                "command": "simulate_monkey_box_opening",
+                "data": {
+                    "box_type": box_type,
+                    "box_count": raw_box_count,
+                },
+                "message": "box_count 必须是正整数。",
+                "extra_prompt": "请提示用户提供正确的开箱数量。",
+                "response_type": "text",
+                "image_path": "",
+            }
+
+        ok, report_path, image_path, output_text, error_message = self._run_chat_monkey_simulator(
+            box_type=box_type,
+            box_count=box_count,
+        )
+        if not ok:
+            return {
+                "module": "command_processor",
+                "ok": False,
+                "command": "simulate_monkey_box_opening",
+                "data": {
+                    "box_type": box_type,
+                    "box_count": box_count,
+                    "report_path": "",
+                    "image_path": "",
+                },
+                "message": error_message,
+                "extra_prompt": "请说明开箱模拟失败并建议稍后重试。",
+                "response_type": "text",
+                "image_path": "",
+            }
+
+        generated_files = [report_path]
+        if image_path:
+            generated_files.append(image_path)
+
+        response_type = "image" if image_path else "text"
+        message = "开箱模拟完成，已生成统计与拼图" if image_path else "开箱模拟完成，已生成统计文档"
+        extra_prompt = (
+            "请先简要概括本次开箱结果，再发送开箱拼图。"
+            if image_path
+            else "请基于输出文本简要总结本次开箱统计结果。"
+        )
+
+        return {
+            "module": "command_processor",
+            "ok": True,
+            "command": "simulate_monkey_box_opening",
+            "data": {
+                "box_type": box_type,
+                "box_count": box_count,
+                "report_path": report_path,
+                "generated_files": generated_files,
+                "output_text": output_text,
+            },
+            "message": message,
+            "extra_prompt": extra_prompt,
+            "response_type": response_type,
+            "image_path": image_path,
+        }
+
+    def _run_chat_monkey_simulator(
+        self,
+        box_type: str,
+        box_count: int,
+    ) -> tuple[bool, str, str, str, str]:
+        if not self._chat_monkey_main.exists():
+            return False, "", "", "", "未找到 ChatMonkeyTD/main.py。"
+
+        self._chat_monkey_output_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = (self._chat_monkey_output_dir / f"bot_open_result_{stamp}.md").resolve()
+        image_path = (self._chat_monkey_output_dir / f"bot_open_result_{stamp}.webp").resolve()
+
+        cmd = [
+            sys.executable,
+            str(self._chat_monkey_main.name),
+            box_type,
+            str(box_count),
+            "--report",
+            str(report_path),
+        ]
+        if box_count <= 50:
+            cmd.extend(["--output", str(image_path)])
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(self._chat_monkey_root),
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return False, "", "", "", "开箱模拟超时，请稍后重试。"
+        except Exception as exc:
+            return False, "", "", "", f"执行开箱模拟失败: {type(exc).__name__}"
+
+        if proc.returncode != 0:
+            err_text = (proc.stderr or proc.stdout or "").strip()
+            err_text = err_text.splitlines()[-1] if err_text else "未知错误"
+            return False, "", "", "", f"开箱模拟执行失败: {err_text}"
+
+        if not report_path.exists():
+            return False, "", "", "", "开箱模拟执行成功但未找到统计文档。"
+
+        final_image_path = ""
+        if box_count <= 50:
+            if not image_path.exists():
+                return False, "", "", "", "开箱模拟执行成功但未找到拼图文件。"
+            final_image_path = str(image_path)
+
+        output_text = "\n".join(
+            [
+                (proc.stdout or "").strip(),
+                (proc.stderr or "").strip(),
+            ]
+        ).strip()
+
+        return True, str(report_path), final_image_path, output_text, ""
+
     def _run_btd6_api_cli(
         self,
         mode: str,
         detail_type: str = "",
         leaderboard_type: str = "",
         leaderboard_format: str = "markdown",
+        collection_only_upcoming: bool = False,
     ) -> tuple[bool, str, list[str], str]:
         if not self._api_processor_cli.exists():
             return False, "", [], "未找到 btd6_api_processor/btd6_cli.py。"
@@ -371,6 +586,9 @@ class CommandProcessor:
 
         if mode == "leaderboard":
             cmd.extend(["--leaderboard-type", leaderboard_type or "race", "--leaderboard-format", leaderboard_format])
+
+        if mode == "collection-event" and collection_only_upcoming:
+            cmd.append("--only-upcoming")
 
         env = os.environ.copy()
         nk_api_key = os.getenv("NK_API_KEY", "").strip()
@@ -414,7 +632,19 @@ class CommandProcessor:
                     files.append(str((self._api_processor_root / raw).resolve()))
                 continue
 
-            match = re.search(r"->\s*([\w./-]+\.(?:md|png))\s*$", text)
+            if text.startswith("# JSON:"):
+                raw = text.split(":", 1)[1].strip()
+                if raw:
+                    files.append(str((self._api_processor_root / raw).resolve()))
+                continue
+
+            if text.startswith("# 图片:"):
+                raw = text.split(":", 1)[1].strip()
+                if raw:
+                    files.append(str((self._api_processor_root / raw).resolve()))
+                continue
+
+            match = re.search(r"->\s*([\w./-]+\.(?:md|png|json))\s*$", text)
             if match:
                 files.append(str((self._api_processor_root / match.group(1)).resolve()))
 
@@ -744,7 +974,7 @@ class CommandProcessor:
                 "extra_prompt": (
                     "这是从长文中提取的相关文本块。"
                     "请优先基于 content 回答。"
-                    "若信息不足，换关键词或换文件继续提取。"
+                    "若信息不足，更换更简单的关键词或换文件继续提取。"
                 ),
             }
 
