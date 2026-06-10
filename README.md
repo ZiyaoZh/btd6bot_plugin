@@ -14,9 +14,9 @@
 - 多轮工具编排：支持在一次对话中连续调用多个工具指令，必要时切换工具集。
 - BTD6 游戏能力：
 	- 游戏知识检索与安全文件读取。
-	- 活动数据后台定时刷新（集成 refresh-service）。
 	- 活动详情查询（race/boss/odyssey/daily）。
 	- 活动排行榜查询（race/boss-standard/boss-elite），支持图片输出。
+	- 每天 07:00 自动发送当天活动简报，走现有 LLM 路由与工具编排链路生成文案。
 - 会话与数据持久化：
 	- 群消息写入 SQLite。
 	- 今日活跃榜、最近消息总结等统计能力。
@@ -42,6 +42,31 @@
 
 插件启动后默认处理群消息，不再通过环境变量开关控制启停。
 
+## 定时活动简报
+
+插件加载时会注册一个每天 `07:00` 的定时任务，向目标群发送“当天活动简报”。
+
+- 简报不是在定时任务里直接硬编码调用活动指令，而是构造一条系统提示词，继续走现有的大模型路由、工具选择和结果润色链路。
+- 默认发送到 `BOT_TARGET_GROUP_IDS`（未配置时回退到 `BOT_TARGET_GROUP_ID`）中的群。
+- 如需覆盖默认行为，可修改插件配置 `data/btd6bot_plugin/config.yaml` 中的 `daily_activity_brief`。
+
+配置结构示例：
+
+```yaml
+daily_activity_brief:
+  enabled: true
+  schedule: "07:00"
+  group_ids: []
+  prompt: "请生成今天的 BTD6 活动简报，并直接整理成适合发送到群里的晨间播报。"
+```
+
+说明：
+
+- `enabled`: 是否启用定时简报。
+- `schedule`: 每日触发时间，格式如 `07:00`。
+- `group_ids`: 可选，留空时使用机器人默认目标群列表。
+- `prompt`: 发给大模型的固定提示词，可按你的群风格自行调整。
+
 ## 入口建议
 
 使用 `run_plugin_bot.py` 启动插件模式。
@@ -49,7 +74,6 @@
 ## 纯插件启动配置
 
 - 推荐配置模板：`.env.plugin.example`
-- 可选配置：`BOT_GAME_NEWS_REFRESH_INTERVAL_SECONDS`（默认 600 秒）
 - 启动命令：`python run_plugin_bot.py`
 
 ## 插件日志目录

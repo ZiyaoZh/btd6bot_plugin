@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import os
 import re
-import sys
 import traceback
 from pathlib import Path
 from typing import Any
@@ -25,6 +23,17 @@ from .bot_app.settings import AppSettings, load_settings
 from .bot_app.tool_selector import ToolSelector
 
 
+DEFAULT_DAILY_ACTIVITY_BRIEF_PROMPT = (
+    "请生成今天的 BTD6 活动简报，并直接整理成适合发送到群里的晨间播报。"
+    "你必须优先调用现有活动查询能力，自行完成信息收集后再给最终答复。"
+    "请至少覆盖 race、boss、odyssey、daily 四类活动；某一类如果暂时查不到，要明确说明缺失，不要编造。"
+    "输出要求：只输出纯文本，不要 Markdown、不要代码块、不要 JSON、不要工具名、不要文件路径。"
+    "先用一句简短开场，再按活动分段概括名称、时间、关键规则或亮点。"
+    "不要发送排行榜，不要图片，不要要求用户补充信息。"
+    "整体保持简洁，控制在 600 字以内。"
+)
+
+
 class _PluginBotProxy:
     def __init__(self, api) -> None:
         self.api = api
@@ -35,60 +44,6 @@ class Btd6BotPlugin(NcatBotPlugin):
     version = "0.1.0"
     author = "btd6bot"
     description = "BTD6 群聊智能插件：支持路由决策、多轮工具编排、知识库检索、活动资讯/排行榜与消息持久化。"
-
-    def _build_refresh_service_context(self) -> tuple[Any, dict[str, dict[str, str]], Any] | None:
-        api_root = Path(__file__).resolve().parent / "btd6_api_processor"
-        root_text = str(api_root)
-        if root_text not in sys.path:
-            sys.path.insert(0, root_text)
-
-        try:
-            from api_raw_fetcher import ApiClient  # type: ignore
-            from btd6_core.common import parse_translation_tables  # type: ignore
-            from btd6_core.update_service import update_all_data  # type: ignore
-        except Exception as exc:
-            log_flow(
-                stage="game_news.refresh.init_failed",
-                trace_id=f"{self.name}.refresh",
-                error_type=type(exc).__name__,
-                error=str(exc),
-            )
-            return None
-
-        api_key = os.getenv("NK_API_KEY", "").strip() or None
-        client = ApiClient(api_key=api_key)
-        trans = parse_translation_tables(api_root / "translate.md")
-        return client, trans, update_all_data
-
-    async def _run_game_news_refresh_loop(self) -> None:
-        context = self._build_refresh_service_context()
-        if context is None:
-            return
-
-        client, trans, update_all_data = context
-        interval = self._settings.game_news_refresh_interval_seconds
-        trace_id = f"{self.name}.refresh"
-
-        while True:
-            try:
-                await asyncio.to_thread(update_all_data, client, trans)
-                log_flow(
-                    stage="game_news.refresh.success",
-                    trace_id=trace_id,
-                    interval_seconds=interval,
-                )
-            except asyncio.CancelledError:
-                log_flow(stage="game_news.refresh.stopped", trace_id=trace_id)
-                raise
-            except Exception as exc:
-                log_flow(
-                    stage="game_news.refresh.failed",
-                    trace_id=trace_id,
-                    error_type=type(exc).__name__,
-                    error=str(exc),
-                )
-
-            await asyncio.sleep(interval)
 
     def _prepare_plugin_paths(self) -> None:
         plugin_root = Path(__file__).resolve().parent
@@ -131,10 +86,8 @@ class Btd6BotPlugin(NcatBotPlugin):
             command_guide_dir=self._settings.command_guide_dir,
         )
         self._bot_enabled = True
-        self._refresh_task = asyncio.create_task(
-            self._run_game_news_refresh_loop(),
-            name=f"{self.name}.game_news_refresh",
-        )
+        self._daily_activity_brief_config = self._load_daily_activity_brief_config()
+        self._register_daily_activity_brief_task()
         lifecycle_trace_id = f"{self.name}.lifecycle"
 
         log_flow(
@@ -142,17 +95,9 @@ class Btd6BotPlugin(NcatBotPlugin):
             trace_id=lifecycle_trace_id,
             plugin=self.name,
             target_groups=list(self._settings.target_group_ids),
-            refresh_interval_seconds=self._settings.game_news_refresh_interval_seconds,
         )
 
     async def on_close(self) -> None:
-        refresh_task = getattr(self, "_refresh_task", None)
-        if refresh_task is not None:
-            refresh_task.cancel()
-            try:
-                await refresh_task
-            except asyncio.CancelledError:
-                pass
         log_flow(stage="plugin.closed", trace_id=f"{self.name}.lifecycle", plugin=self.name)
 
     @registrar.qq.on_group_message()
@@ -256,6 +201,71 @@ class Btd6BotPlugin(NcatBotPlugin):
         event_payload = self._receiver.build_event_payload(msg, text)
         log_flow(stage="receiver.event_payload", trace_id=trace_id, event_payload=event_payload)
 
+        await self._process_event_payload(
+            event_payload=event_payload,
+            trace_id=trace_id,
+            reply_group_id=str(msg.group_id),
+            at_user_id=str(msg.user_id),
+            include_token_cost=True,
+            send_failure_notice=True,
+        )
+
+    async def daily_activity_brief_task(self) -> None:
+        trace_id = uuid4().hex[:12]
+        config = self._load_daily_activity_brief_config()
+        enabled = bool(config.get("enabled", True))
+        prompt = str(config.get("prompt", "") or "").strip() or DEFAULT_DAILY_ACTIVITY_BRIEF_PROMPT
+        group_ids = self._resolve_daily_activity_brief_group_ids(config)
+
+        log_flow(
+            stage="schedule.daily_activity_brief.triggered",
+            trace_id=trace_id,
+            enabled=enabled,
+            target_groups=group_ids,
+        )
+
+        if not enabled:
+            log_flow(
+                stage="schedule.daily_activity_brief.skipped",
+                trace_id=trace_id,
+                reason="disabled by config",
+            )
+            return
+
+        if not self._bot_enabled:
+            log_flow(
+                stage="schedule.daily_activity_brief.skipped",
+                trace_id=trace_id,
+                reason="bot is stopped",
+            )
+            return
+
+        for group_id in group_ids:
+            event_payload = self._build_scheduled_event_payload(group_id=group_id, prompt=prompt)
+            group_trace_id = f"{trace_id}.{group_id}"
+            log_flow(
+                stage="schedule.daily_activity_brief.event_payload",
+                trace_id=group_trace_id,
+                event_payload=event_payload,
+            )
+            await self._process_event_payload(
+                event_payload=event_payload,
+                trace_id=group_trace_id,
+                reply_group_id=group_id,
+                at_user_id=None,
+                include_token_cost=False,
+                send_failure_notice=False,
+            )
+
+    async def _process_event_payload(
+        self,
+        event_payload: dict[str, Any],
+        trace_id: str,
+        reply_group_id: str,
+        at_user_id: str | None,
+        include_token_cost: bool,
+        send_failure_notice: bool,
+    ) -> None:
         try:
             intent = await self._llm_processor.plan_intent(event_payload, trace_id=trace_id)
             log_flow(stage="judge.route", trace_id=trace_id, target=intent["target"], intent=intent)
@@ -324,25 +334,29 @@ class Btd6BotPlugin(NcatBotPlugin):
                 image_path = ""
 
             reply_for_memory = final_reply
-            total_tokens = self._llm.pop_trace_total_tokens(trace_id)
-            final_reply = _append_token_cost_line(reply_for_memory, total_tokens, self._settings.max_reply_chars)
+            if include_token_cost:
+                total_tokens = self._llm.pop_trace_total_tokens(trace_id)
+                final_reply = _append_token_cost_line(reply_for_memory, total_tokens, self._settings.max_reply_chars)
+            else:
+                final_reply = reply_for_memory[: self._settings.max_reply_chars]
+                self._llm.pop_trace_total_tokens(trace_id)
 
             if intent["target"] in {"tool_selector", "command_processor"}:
                 await self._llm_processor.record_tool_turn(event_payload, reply_for_memory, trace_id=trace_id)
 
             if response_type == "image" and image_path:
                 await self._sender.send_group_image(
-                    group_id=event_payload["group_id"],
+                    group_id=reply_group_id,
                     image_path=image_path,
                     text=final_reply,
-                    at_user_id=event_payload["user_id"],
+                    at_user_id=at_user_id,
                 )
                 log_flow(stage="sender.sent", trace_id=trace_id, reply=final_reply, image_path=image_path)
             else:
                 await self._sender.send_group_text(
-                    group_id=event_payload["group_id"],
+                    group_id=reply_group_id,
                     text=final_reply,
-                    at_user_id=event_payload["user_id"],
+                    at_user_id=at_user_id,
                 )
                 log_flow(stage="sender.sent", trace_id=trace_id, reply=final_reply)
         except Exception as exc:
@@ -361,13 +375,83 @@ class Btd6BotPlugin(NcatBotPlugin):
                 )
                 return
 
+            if not send_failure_notice:
+                return
+
             public_error = f"请求处理失败: {type(exc).__name__}"
             await self._sender.send_group_text(
-                group_id=str(msg.group_id),
+                group_id=reply_group_id,
                 text=public_error,
-                at_user_id=str(msg.user_id),
+                at_user_id=at_user_id,
             )
             log_flow(stage="sender.sent", trace_id=trace_id, reply=public_error)
+
+    def _load_daily_activity_brief_config(self) -> dict[str, Any]:
+        defaults = {
+            "enabled": True,
+            "schedule": "07:00",
+            "prompt": DEFAULT_DAILY_ACTIVITY_BRIEF_PROMPT,
+            "group_ids": [],
+        }
+        raw = self.get_config("daily_activity_brief", {})
+        config = raw if isinstance(raw, dict) else {}
+        merged = {**defaults, **config}
+        group_ids = merged.get("group_ids", [])
+        if not isinstance(group_ids, list):
+            group_ids = []
+        merged["group_ids"] = [str(group_id).strip() for group_id in group_ids if str(group_id).strip()]
+
+        if merged != config:
+            self.set_config("daily_activity_brief", merged)
+
+        return merged
+
+    def _register_daily_activity_brief_task(self) -> None:
+        enabled = bool(self._daily_activity_brief_config.get("enabled", True))
+        schedule = str(self._daily_activity_brief_config.get("schedule", "") or "").strip() or "07:00"
+        if not enabled:
+            log_flow(
+                stage="schedule.daily_activity_brief.disabled",
+                trace_id=f"{self.name}.daily_activity_brief",
+                schedule=schedule,
+            )
+            return
+
+        added = self.add_scheduled_task("daily_activity_brief_task", schedule)
+        log_flow(
+            stage="schedule.daily_activity_brief.registered",
+            trace_id=f"{self.name}.daily_activity_brief",
+            enabled=enabled,
+            schedule=schedule,
+            added=added,
+            target_groups=self._resolve_daily_activity_brief_group_ids(self._daily_activity_brief_config),
+        )
+
+    def _resolve_daily_activity_brief_group_ids(self, config: dict[str, Any]) -> list[str]:
+        configured = config.get("group_ids", [])
+        if isinstance(configured, list):
+            group_ids = [str(group_id).strip() for group_id in configured if str(group_id).strip()]
+            if group_ids:
+                return group_ids
+        return list(self._settings.target_group_ids)
+
+    def _build_scheduled_event_payload(self, group_id: str, prompt: str) -> dict[str, Any]:
+        return {
+            "module": "scheduler",
+            "event_type": "scheduled_daily_activity_brief",
+            "group_id": group_id,
+            "user_id": "__daily_activity_brief__",
+            "text": prompt,
+            "bot_mentioned": True,
+            "mentioned_qqs": [],
+            "identity": {
+                "nickname": "系统定时任务",
+                "card": "",
+                "role": "system",
+                "title": "",
+                "level": "",
+            },
+        }
 
 
 def _append_token_cost_line(text: str, total_tokens: int, max_chars: int) -> str:

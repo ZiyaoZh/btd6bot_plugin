@@ -17,7 +17,7 @@ class AppSettings:
     system_prompt: str = "你是一个友好、简洁、乐于助人的群聊机器人。"
     router_tool_hints_prompt: str = ""
     request_timeout: int = 30
-    llm_max_retries: int = 2
+    llm_max_retries: int = 20
     history_turns: int = 6
     max_reply_chars: int = 1200
     trigger_prefix: str = ""
@@ -27,7 +27,6 @@ class AppSettings:
     command_guide_dir: str = "command_skills"
     max_tool_rounds: int = 4
     proactive_chat_enabled: bool = True
-    game_news_refresh_interval_seconds: int = 600
     db_file: str = "data/bot_data.db"
     flow_log_file: str = "logs/network.log"
     context_compact_max_chars: int = 100000
@@ -118,7 +117,7 @@ def load_settings(env_path: str = ".env") -> AppSettings:
             router_tool_hints_prompt = router_hints_path.read_text(encoding="utf-8").strip()
 
     request_timeout = int(os.getenv("LLM_REQUEST_TIMEOUT", "30"))
-    llm_max_retries = int(os.getenv("LLM_MAX_RETRIES", "2"))
+    llm_max_retries = int(os.getenv("LLM_MAX_RETRIES", "20"))
     history_turns = int(os.getenv("LLM_HISTORY_TURNS", "6"))
     max_reply_chars = int(os.getenv("LLM_MAX_REPLY_CHARS", "1200"))
     trigger_prefix = os.getenv("BOT_TRIGGER_PREFIX", "").strip()
@@ -133,7 +132,6 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         "yes",
         "on",
     }
-    game_news_refresh_interval_seconds = int(os.getenv("BOT_GAME_NEWS_REFRESH_INTERVAL_SECONDS", "600"))
     db_file = os.getenv("BOT_DB_FILE", "data/bot_data.db").strip() or "data/bot_data.db"
     flow_log_file = os.getenv("BOT_FLOW_LOG_FILE", "logs/network.log").strip() or "logs/network.log"
     context_compact_max_chars = int(os.getenv("LLM_CONTEXT_COMPACT_MAX_CHARS", "100000"))
@@ -163,7 +161,6 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         command_guide_dir=command_guide_dir,
         max_tool_rounds=max(1, max_tool_rounds),
         proactive_chat_enabled=proactive_chat_enabled,
-        game_news_refresh_interval_seconds=max(60, game_news_refresh_interval_seconds),
         db_file=db_file,
         flow_log_file=flow_log_file,
         context_compact_max_chars=max(1000, context_compact_max_chars),
