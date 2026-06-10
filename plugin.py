@@ -14,13 +14,13 @@ from ncatbot.plugin import NcatBotPlugin
 from .bot_app.command_processor import CommandProcessor
 from .bot_app.db_manager import BotDatabase
 from .bot_app.llm_client import LLMClient, LLMRequestError
-from .bot_app.llm_processor import LLMMessageProcessor
+from .bot_app.agent import AgentRunner
+from .bot_app.agent.tool_registry import ToolRegistry
 from .bot_app.logging_utils import configure_flow_logger, log_flow
 from .bot_app.memory import GroupChatMemory
 from .bot_app.receiver import GroupMessageReceiver
 from .bot_app.sender import MessageSender
 from .bot_app.settings import AppSettings, load_settings
-from .bot_app.tool_selector import ToolSelector
 
 
 DEFAULT_DAILY_ACTIVITY_BRIEF_PROMPT = (
@@ -74,16 +74,16 @@ class Btd6BotPlugin(NcatBotPlugin):
         self._sender = MessageSender(_PluginBotProxy(self.api))
         memory = GroupChatMemory(history_turns=self._settings.history_turns)
         self._llm = LLMClient(settings=self._settings)
-        self._llm_processor = LLMMessageProcessor(
-            llm=self._llm,
-            memory=memory,
-            settings=self._settings,
-        )
-        self._tool_selector = ToolSelector()
         self._command_processor = CommandProcessor(
             db=db,
             manual_file=self._settings.manual_file,
             command_guide_dir=self._settings.command_guide_dir,
+        )
+        self._agent = AgentRunner(
+            llm=self._llm,
+            memory=memory,
+            settings=self._settings,
+            tool_registry=ToolRegistry(self._command_processor),
         )
         self._bot_enabled = True
         self._daily_activity_brief_config = self._load_daily_activity_brief_config()
@@ -98,7 +98,9 @@ class Btd6BotPlugin(NcatBotPlugin):
         )
 
     async def on_close(self) -> None:
-        log_flow(stage="plugin.closed", trace_id=f"{self.name}.lifecycle", plugin=self.name)
+        log_flow(
+            stage="plugin.closed", trace_id=f"{self.name}.lifecycle", plugin=self.name
+        )
 
     @registrar.qq.on_group_message()
     async def on_group_message(self, msg: GroupMessageEvent):
@@ -113,15 +115,24 @@ class Btd6BotPlugin(NcatBotPlugin):
 
         if self._receiver.should_track_message(msg):
             self._receiver.sync_message_to_db(msg)
-            log_flow(stage="db.synced", trace_id=trace_id, group_id=str(msg.group_id), user_id=str(msg.user_id))
+            log_flow(
+                stage="db.synced",
+                trace_id=trace_id,
+                group_id=str(msg.group_id),
+                user_id=str(msg.user_id),
+            )
 
         if not self._receiver.should_accept(msg):
-            log_flow(stage="receiver.rejected", trace_id=trace_id, reason="message filtered")
+            log_flow(
+                stage="receiver.rejected", trace_id=trace_id, reason="message filtered"
+            )
             return
 
         admin_control = self._receiver.parse_admin_control(msg)
         if admin_control["matched"]:
-            log_flow(stage="receiver.admin_control", trace_id=trace_id, control=admin_control)
+            log_flow(
+                stage="receiver.admin_control", trace_id=trace_id, control=admin_control
+            )
 
             if not admin_control["authorized"]:
                 await self._sender.send_group_text(
@@ -143,7 +154,9 @@ class Btd6BotPlugin(NcatBotPlugin):
                     text="已终止机器人对话处理",
                     at_user_id=str(msg.user_id),
                 )
-                log_flow(stage="sender.sent", trace_id=trace_id, reply="已终止机器人对话处理")
+                log_flow(
+                    stage="sender.sent", trace_id=trace_id, reply="已终止机器人对话处理"
+                )
                 return
 
             if admin_control["action"] == "start":
@@ -153,12 +166,16 @@ class Btd6BotPlugin(NcatBotPlugin):
                     text="已启动机器人对话处理",
                     at_user_id=str(msg.user_id),
                 )
-                log_flow(stage="sender.sent", trace_id=trace_id, reply="已启动机器人对话处理")
+                log_flow(
+                    stage="sender.sent", trace_id=trace_id, reply="已启动机器人对话处理"
+                )
                 return
 
             if admin_control["action"] == "proactive_on":
                 self._receiver.set_proactive_chat_enabled(True)
-                _persist_env_bool(self._settings.env_file, "BOT_PROACTIVE_CHAT_ENABLED", True)
+                _persist_env_bool(
+                    self._settings.env_file, "BOT_PROACTIVE_CHAT_ENABLED", True
+                )
                 await self._sender.send_group_text(
                     group_id=str(msg.group_id),
                     text="已开启主动接话",
@@ -169,37 +186,60 @@ class Btd6BotPlugin(NcatBotPlugin):
 
             if admin_control["action"] == "proactive_off":
                 self._receiver.set_proactive_chat_enabled(False)
-                _persist_env_bool(self._settings.env_file, "BOT_PROACTIVE_CHAT_ENABLED", False)
+                _persist_env_bool(
+                    self._settings.env_file, "BOT_PROACTIVE_CHAT_ENABLED", False
+                )
                 await self._sender.send_group_text(
                     group_id=str(msg.group_id),
                     text="已关闭主动接话，仅响应@消息",
                     at_user_id=str(msg.user_id),
                 )
-                log_flow(stage="sender.sent", trace_id=trace_id, reply="已关闭主动接话，仅响应@消息")
+                log_flow(
+                    stage="sender.sent",
+                    trace_id=trace_id,
+                    reply="已关闭主动接话，仅响应@消息",
+                )
                 return
 
         if not self._bot_enabled:
-            log_flow(stage="receiver.rejected", trace_id=trace_id, reason="bot is stopped")
+            log_flow(
+                stage="receiver.rejected", trace_id=trace_id, reason="bot is stopped"
+            )
             return
 
         text = self._receiver.normalize_text(msg.raw_message or "")
         if not text:
-            log_flow(stage="receiver.rejected", trace_id=trace_id, reason="empty text after normalize")
+            log_flow(
+                stage="receiver.rejected",
+                trace_id=trace_id,
+                reason="empty text after normalize",
+            )
             return
 
         if text in {"/reset", "#reset", "重置会话"}:
-            self._llm_processor.reset_user_context(str(msg.group_id), str(msg.user_id))
-            log_flow(stage="memory.reset", trace_id=trace_id, group_id=str(msg.group_id), user_id=str(msg.user_id))
+            self._agent.reset_user_context(str(msg.group_id), str(msg.user_id))
+            log_flow(
+                stage="memory.reset",
+                trace_id=trace_id,
+                group_id=str(msg.group_id),
+                user_id=str(msg.user_id),
+            )
             await self._sender.send_group_text(
                 group_id=str(msg.group_id),
                 text="你的会话上下文已重置",
                 at_user_id=str(msg.user_id),
             )
-            log_flow(stage="sender.sent", trace_id=trace_id, reply="你的会话上下文已重置")
+            log_flow(
+                stage="sender.sent", trace_id=trace_id, reply="你的会话上下文已重置"
+            )
             return
 
         event_payload = self._receiver.build_event_payload(msg, text)
-        log_flow(stage="receiver.event_payload", trace_id=trace_id, event_payload=event_payload)
+        log_flow(
+            stage="receiver.event_payload",
+            trace_id=trace_id,
+            event_payload=event_payload,
+        )
 
         await self._process_event_payload(
             event_payload=event_payload,
@@ -214,7 +254,10 @@ class Btd6BotPlugin(NcatBotPlugin):
         trace_id = uuid4().hex[:12]
         config = self._load_daily_activity_brief_config()
         enabled = bool(config.get("enabled", True))
-        prompt = str(config.get("prompt", "") or "").strip() or DEFAULT_DAILY_ACTIVITY_BRIEF_PROMPT
+        prompt = (
+            str(config.get("prompt", "") or "").strip()
+            or DEFAULT_DAILY_ACTIVITY_BRIEF_PROMPT
+        )
         group_ids = self._resolve_daily_activity_brief_group_ids(config)
 
         log_flow(
@@ -241,7 +284,9 @@ class Btd6BotPlugin(NcatBotPlugin):
             return
 
         for group_id in group_ids:
-            event_payload = self._build_scheduled_event_payload(group_id=group_id, prompt=prompt)
+            event_payload = self._build_scheduled_event_payload(
+                group_id=group_id, prompt=prompt
+            )
             group_trace_id = f"{trace_id}.{group_id}"
             log_flow(
                 stage="schedule.daily_activity_brief.event_payload",
@@ -267,91 +312,36 @@ class Btd6BotPlugin(NcatBotPlugin):
         send_failure_notice: bool,
     ) -> None:
         try:
-            intent = await self._llm_processor.plan_intent(event_payload, trace_id=trace_id)
-            log_flow(stage="judge.route", trace_id=trace_id, target=intent["target"], intent=intent)
-
-            if intent["target"] == "noop":
-                log_flow(stage="judge.noop", trace_id=trace_id, reason=intent.get("reason", ""))
+            agent_response = await self._agent.run(event_payload, trace_id=trace_id)
+            if not agent_response.should_send:
+                log_flow(stage="agent.noop", trace_id=trace_id)
                 return
 
-            if intent["target"] in {"tool_selector", "command_processor"}:
-                if intent["target"] == "tool_selector":
-                    guide_bundle = await self._tool_selector.load_tool_guides(intent, event_payload, self._command_processor)
-                    log_flow(stage="tool_selector.bundle", trace_id=trace_id, guide_bundle=guide_bundle)
-                    tool_history: list[dict] = [{"intent": intent, "command_result": guide_bundle}]
-                else:
-                    command_result = await self._command_processor.execute(intent, event_payload)
-                    log_flow(stage="command.result", trace_id=trace_id, command_result=command_result)
-                    tool_history = [{"intent": intent, "command_result": command_result}]
-
-                final_reply = ""
-
-                for round_index in range(self._settings.max_tool_rounds):
-                    decision = await self._llm_processor.decide_next_tool_step(
-                        event_payload,
-                        tool_history,
-                        trace_id=trace_id,
-                    )
-                    log_flow(
-                        stage="tool.decision",
-                        trace_id=trace_id,
-                        round=round_index + 1,
-                        decision=decision,
-                    )
-
-                    if decision["decision"] == "final":
-                        final_reply = str(decision.get("final_reply", "") or "").strip()
-                        break
-
-                    next_intent = decision["intent"]
-                    if next_intent.get("target") == "tool_selector":
-                        guide_bundle = await self._tool_selector.load_tool_guides(
-                            next_intent,
-                            event_payload,
-                            self._command_processor,
-                        )
-                        log_flow(stage="tool_selector.bundle", trace_id=trace_id, guide_bundle=guide_bundle)
-                        tool_history.append({"intent": next_intent, "command_result": guide_bundle})
-                    else:
-                        command_result = await self._command_processor.execute(next_intent, event_payload)
-                        log_flow(stage="command.result", trace_id=trace_id, command_result=command_result)
-                        tool_history.append({"intent": next_intent, "command_result": command_result})
-
-                if not final_reply:
-                    final_reply = await self._llm_processor.render_command_result(
-                        event_payload,
-                        tool_history[-1]["intent"],
-                        tool_history[-1]["command_result"],
-                        trace_id=trace_id,
-                    )
-
-                last_result = tool_history[-1].get("command_result", {}) if tool_history else {}
-                response_type = str(last_result.get("response_type", "text") or "text").strip().lower()
-                image_path = str(last_result.get("image_path", "") or "").strip()
-            else:
-                final_reply = await self._llm_processor.chat_reply(event_payload, trace_id=trace_id)
-                response_type = "text"
-                image_path = ""
-
-            reply_for_memory = final_reply
+            reply_for_memory = agent_response.text
             if include_token_cost:
-                total_tokens = self._llm.pop_trace_total_tokens(trace_id)
-                final_reply = _append_token_cost_line(reply_for_memory, total_tokens, self._settings.max_reply_chars)
+                final_reply = _append_token_cost_line(
+                    reply_for_memory,
+                    agent_response.token_usage,
+                    self._settings.max_reply_chars,
+                )
+                self._llm.pop_trace_total_tokens(trace_id)
             else:
                 final_reply = reply_for_memory[: self._settings.max_reply_chars]
                 self._llm.pop_trace_total_tokens(trace_id)
 
-            if intent["target"] in {"tool_selector", "command_processor"}:
-                await self._llm_processor.record_tool_turn(event_payload, reply_for_memory, trace_id=trace_id)
-
-            if response_type == "image" and image_path:
+            if agent_response.response_type == "image" and agent_response.image_path:
                 await self._sender.send_group_image(
                     group_id=reply_group_id,
-                    image_path=image_path,
+                    image_path=agent_response.image_path,
                     text=final_reply,
                     at_user_id=at_user_id,
                 )
-                log_flow(stage="sender.sent", trace_id=trace_id, reply=final_reply, image_path=image_path)
+                log_flow(
+                    stage="sender.sent",
+                    trace_id=trace_id,
+                    reply=final_reply,
+                    image_path=agent_response.image_path,
+                )
             else:
                 await self._sender.send_group_text(
                     group_id=reply_group_id,
@@ -399,7 +389,9 @@ class Btd6BotPlugin(NcatBotPlugin):
         group_ids = merged.get("group_ids", [])
         if not isinstance(group_ids, list):
             group_ids = []
-        merged["group_ids"] = [str(group_id).strip() for group_id in group_ids if str(group_id).strip()]
+        merged["group_ids"] = [
+            str(group_id).strip() for group_id in group_ids if str(group_id).strip()
+        ]
 
         if merged != config:
             self.set_config("daily_activity_brief", merged)
@@ -408,7 +400,10 @@ class Btd6BotPlugin(NcatBotPlugin):
 
     def _register_daily_activity_brief_task(self) -> None:
         enabled = bool(self._daily_activity_brief_config.get("enabled", True))
-        schedule = str(self._daily_activity_brief_config.get("schedule", "") or "").strip() or "07:00"
+        schedule = (
+            str(self._daily_activity_brief_config.get("schedule", "") or "").strip()
+            or "07:00"
+        )
         if not enabled:
             log_flow(
                 stage="schedule.daily_activity_brief.disabled",
@@ -424,18 +419,28 @@ class Btd6BotPlugin(NcatBotPlugin):
             enabled=enabled,
             schedule=schedule,
             added=added,
-            target_groups=self._resolve_daily_activity_brief_group_ids(self._daily_activity_brief_config),
+            target_groups=self._resolve_daily_activity_brief_group_ids(
+                self._daily_activity_brief_config
+            ),
         )
 
-    def _resolve_daily_activity_brief_group_ids(self, config: dict[str, Any]) -> list[str]:
+    def _resolve_daily_activity_brief_group_ids(
+        self, config: dict[str, Any]
+    ) -> list[str]:
         configured = config.get("group_ids", [])
         if isinstance(configured, list):
-            group_ids = [str(group_id).strip() for group_id in configured if str(group_id).strip()]
+            group_ids = [
+                str(group_id).strip()
+                for group_id in configured
+                if str(group_id).strip()
+            ]
             if group_ids:
                 return group_ids
         return list(self._settings.target_group_ids)
 
-    def _build_scheduled_event_payload(self, group_id: str, prompt: str) -> dict[str, Any]:
+    def _build_scheduled_event_payload(
+        self, group_id: str, prompt: str
+    ) -> dict[str, Any]:
         return {
             "module": "scheduler",
             "event_type": "scheduled_daily_activity_brief",

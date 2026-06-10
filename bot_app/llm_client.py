@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from http.client import IncompleteRead, RemoteDisconnected
 import json
 from threading import Lock
+from typing import Any
 from urllib import error, request
 
 from .logging_utils import log_flow
@@ -14,6 +16,30 @@ class LLMRequestError(RuntimeError):
     """Raised when a request to LLM backend fails."""
 
 
+@dataclass(frozen=True)
+class LLMToolCall:
+    id: str
+    name: str
+    arguments: str
+
+    def to_log_payload(self) -> dict[str, str]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "arguments": self.arguments,
+        }
+
+
+@dataclass(frozen=True)
+class LLMResponse:
+    content: str
+    assistant_message: dict[str, Any]
+    tool_calls: list[LLMToolCall]
+    total_tokens: int
+    raw: dict[str, Any]
+    model: str
+
+
 class LLMClient:
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
@@ -22,10 +48,25 @@ class LLMClient:
 
     async def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         trace_id: str = "",
         purpose: str = "chat",
     ) -> str:
+        response = await self.chat_completion(
+            messages=messages, trace_id=trace_id, purpose=purpose
+        )
+        return response.content
+
+    async def chat_completion(
+        self,
+        messages: list[dict[str, Any]],
+        trace_id: str = "",
+        purpose: str = "chat",
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
+        temperature: float | None = None,
+    ) -> LLMResponse:
         per_model_attempts = self._settings.llm_max_retries + 1
         last_error: Exception | None = None
         models = list(self._settings.models)
@@ -44,8 +85,11 @@ class LLMClient:
                         model,
                         self._settings.api_base_url,
                         self._settings.api_key,
-                        0.7,
+                        0.7 if temperature is None else float(temperature),
                         True,
+                        tools,
+                        tool_choice,
+                        response_format,
                     )
                 except LLMRequestError as exc:
                     last_error = exc
@@ -73,7 +117,7 @@ class LLMClient:
 
     async def chat_with_override(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         trace_id: str,
         purpose: str,
         model: str,
@@ -81,7 +125,7 @@ class LLMClient:
         api_key: str,
         temperature: float = 0.7,
     ) -> str:
-        return await asyncio.to_thread(
+        response = await asyncio.to_thread(
             self._chat_sync,
             messages,
             trace_id,
@@ -91,7 +135,11 @@ class LLMClient:
             api_key,
             float(temperature),
             True,
+            None,
+            None,
+            None,
         )
+        return response.content
 
     def pop_trace_total_tokens(self, trace_id: str) -> int:
         if not trace_id:
@@ -101,7 +149,7 @@ class LLMClient:
 
     def _chat_sync(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         trace_id: str,
         purpose: str,
         model: str,
@@ -109,13 +157,22 @@ class LLMClient:
         api_key: str,
         temperature: float,
         accumulate_tokens: bool,
-    ) -> str:
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        response_format: dict[str, Any] | None,
+    ) -> LLMResponse:
         url = f"{api_base_url}/chat/completions"
-        payload = {
+        payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
         }
+        if tools is not None:
+            payload["tools"] = tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+        if response_format is not None:
+            payload["response_format"] = response_format
 
         if trace_id:
             log_flow(
@@ -143,10 +200,14 @@ class LLMClient:
             with request.urlopen(req, timeout=self._settings.request_timeout) as resp:
                 raw = resp.read().decode("utf-8")
             data = json.loads(raw)
-            content = data["choices"][0]["message"]["content"]
-            answer = str(content).strip()
+            assistant_message = data["choices"][0]["message"]
+            content = assistant_message.get("content", "")
+            answer = str(content or "").strip()
+            tool_calls = self._parse_tool_calls(assistant_message)
             usage = data.get("usage", {}) if isinstance(data, dict) else {}
-            total_tokens_raw = usage.get("total_tokens", 0) if isinstance(usage, dict) else 0
+            total_tokens_raw = (
+                usage.get("total_tokens", 0) if isinstance(usage, dict) else 0
+            )
             try:
                 total_tokens = int(total_tokens_raw)
             except (TypeError, ValueError):
@@ -154,7 +215,9 @@ class LLMClient:
 
             if trace_id and total_tokens > 0 and accumulate_tokens:
                 with self._token_lock:
-                    self._trace_token_totals[trace_id] = self._trace_token_totals.get(trace_id, 0) + total_tokens
+                    self._trace_token_totals[trace_id] = (
+                        self._trace_token_totals.get(trace_id, 0) + total_tokens
+                    )
 
             if trace_id:
                 log_flow(
@@ -163,9 +226,17 @@ class LLMClient:
                     purpose=purpose,
                     response=data,
                     answer=answer,
+                    tool_calls=[tool_call.to_log_payload() for tool_call in tool_calls],
                     total_tokens=total_tokens,
                 )
-            return answer
+            return LLMResponse(
+                content=answer,
+                assistant_message=self._normalize_assistant_message(assistant_message),
+                tool_calls=tool_calls,
+                total_tokens=total_tokens,
+                raw=data,
+                model=model,
+            )
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="ignore")
             if trace_id:
@@ -228,3 +299,39 @@ class LLMClient:
                     detail=str(exc),
                 )
             raise LLMRequestError("LLM 返回格式异常") from exc
+
+    def _parse_tool_calls(self, assistant_message: dict[str, Any]) -> list[LLMToolCall]:
+        raw_tool_calls = assistant_message.get("tool_calls", [])
+        if not isinstance(raw_tool_calls, list):
+            return []
+
+        parsed: list[LLMToolCall] = []
+        for index, item in enumerate(raw_tool_calls):
+            if not isinstance(item, dict):
+                continue
+            function = item.get("function", {})
+            if not isinstance(function, dict):
+                function = {}
+            name = str(function.get("name", "") or "").strip()
+            if not name:
+                continue
+            parsed.append(
+                LLMToolCall(
+                    id=str(item.get("id", "") or f"tool_call_{index}"),
+                    name=name,
+                    arguments=str(function.get("arguments", "") or "{}"),
+                )
+            )
+        return parsed
+
+    def _normalize_assistant_message(
+        self, assistant_message: dict[str, Any]
+    ) -> dict[str, Any]:
+        normalized = {
+            "role": "assistant",
+            "content": assistant_message.get("content") or "",
+        }
+        tool_calls = assistant_message.get("tool_calls", [])
+        if isinstance(tool_calls, list) and tool_calls:
+            normalized["tool_calls"] = tool_calls
+        return normalized

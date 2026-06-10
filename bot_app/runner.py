@@ -11,13 +11,13 @@ from ncatbot.event.qq import GroupMessageEvent
 from .command_processor import CommandProcessor
 from .db_manager import BotDatabase
 from .llm_client import LLMClient, LLMRequestError
-from .llm_processor import LLMMessageProcessor
+from .agent import AgentRunner
+from .agent.tool_registry import ToolRegistry
 from .logging_utils import configure_flow_logger, log_flow
 from .memory import GroupChatMemory
 from .receiver import GroupMessageReceiver
 from .sender import MessageSender
 from .settings import load_settings
-from .tool_selector import ToolSelector
 
 
 def create_bot() -> BotClient:
@@ -30,12 +30,16 @@ def create_bot() -> BotClient:
     sender = MessageSender(bot)
     memory = GroupChatMemory(history_turns=settings.history_turns)
     llm = LLMClient(settings=settings)
-    llm_processor = LLMMessageProcessor(llm=llm, memory=memory, settings=settings)
-    tool_selector = ToolSelector()
     command_processor = CommandProcessor(
         db=db,
         manual_file=settings.manual_file,
         command_guide_dir=settings.command_guide_dir,
+    )
+    agent = AgentRunner(
+        llm=llm,
+        memory=memory,
+        settings=settings,
+        tool_registry=ToolRegistry(command_processor),
     )
     bot_enabled = True
 
@@ -53,15 +57,24 @@ def create_bot() -> BotClient:
 
         if receiver.should_track_message(msg):
             receiver.sync_message_to_db(msg)
-            log_flow(stage="db.synced", trace_id=trace_id, group_id=str(msg.group_id), user_id=str(msg.user_id))
+            log_flow(
+                stage="db.synced",
+                trace_id=trace_id,
+                group_id=str(msg.group_id),
+                user_id=str(msg.user_id),
+            )
 
         if not receiver.should_accept(msg):
-            log_flow(stage="receiver.rejected", trace_id=trace_id, reason="message filtered")
+            log_flow(
+                stage="receiver.rejected", trace_id=trace_id, reason="message filtered"
+            )
             return
 
         admin_control = receiver.parse_admin_control(msg)
         if admin_control["matched"]:
-            log_flow(stage="receiver.admin_control", trace_id=trace_id, control=admin_control)
+            log_flow(
+                stage="receiver.admin_control", trace_id=trace_id, control=admin_control
+            )
 
             if not admin_control["authorized"]:
                 await sender.send_group_text(
@@ -83,7 +96,9 @@ def create_bot() -> BotClient:
                     text="已终止机器人对话处理",
                     at_user_id=str(msg.user_id),
                 )
-                log_flow(stage="sender.sent", trace_id=trace_id, reply="已终止机器人对话处理")
+                log_flow(
+                    stage="sender.sent", trace_id=trace_id, reply="已终止机器人对话处理"
+                )
                 return
 
             if admin_control["action"] == "start":
@@ -93,7 +108,9 @@ def create_bot() -> BotClient:
                     text="已启动机器人对话处理",
                     at_user_id=str(msg.user_id),
                 )
-                log_flow(stage="sender.sent", trace_id=trace_id, reply="已启动机器人对话处理")
+                log_flow(
+                    stage="sender.sent", trace_id=trace_id, reply="已启动机器人对话处理"
+                )
                 return
 
             if admin_control["action"] == "proactive_on":
@@ -109,116 +126,88 @@ def create_bot() -> BotClient:
 
             if admin_control["action"] == "proactive_off":
                 receiver.set_proactive_chat_enabled(False)
-                _persist_env_bool(settings.env_file, "BOT_PROACTIVE_CHAT_ENABLED", False)
+                _persist_env_bool(
+                    settings.env_file, "BOT_PROACTIVE_CHAT_ENABLED", False
+                )
                 await sender.send_group_text(
                     group_id=str(msg.group_id),
                     text="已关闭主动接话，仅响应@消息",
                     at_user_id=str(msg.user_id),
                 )
-                log_flow(stage="sender.sent", trace_id=trace_id, reply="已关闭主动接话，仅响应@消息")
+                log_flow(
+                    stage="sender.sent",
+                    trace_id=trace_id,
+                    reply="已关闭主动接话，仅响应@消息",
+                )
                 return
 
         if not bot_enabled:
-            log_flow(stage="receiver.rejected", trace_id=trace_id, reason="bot is stopped")
+            log_flow(
+                stage="receiver.rejected", trace_id=trace_id, reason="bot is stopped"
+            )
             return
 
         text = receiver.normalize_text(msg.raw_message or "")
         if not text:
-            log_flow(stage="receiver.rejected", trace_id=trace_id, reason="empty text after normalize")
+            log_flow(
+                stage="receiver.rejected",
+                trace_id=trace_id,
+                reason="empty text after normalize",
+            )
             return
 
         if text in {"/reset", "#reset", "重置会话"}:
-            llm_processor.reset_user_context(str(msg.group_id), str(msg.user_id))
-            log_flow(stage="memory.reset", trace_id=trace_id, group_id=str(msg.group_id), user_id=str(msg.user_id))
+            agent.reset_user_context(str(msg.group_id), str(msg.user_id))
+            log_flow(
+                stage="memory.reset",
+                trace_id=trace_id,
+                group_id=str(msg.group_id),
+                user_id=str(msg.user_id),
+            )
             await sender.send_group_text(
                 group_id=str(msg.group_id),
                 text="你的会话上下文已重置",
                 at_user_id=str(msg.user_id),
             )
-            log_flow(stage="sender.sent", trace_id=trace_id, reply="你的会话上下文已重置")
+            log_flow(
+                stage="sender.sent", trace_id=trace_id, reply="你的会话上下文已重置"
+            )
             return
 
         event_payload = receiver.build_event_payload(msg, text)
-        log_flow(stage="receiver.event_payload", trace_id=trace_id, event_payload=event_payload)
+        log_flow(
+            stage="receiver.event_payload",
+            trace_id=trace_id,
+            event_payload=event_payload,
+        )
 
         try:
-            intent = await llm_processor.plan_intent(event_payload, trace_id=trace_id)
-            log_flow(stage="judge.route", trace_id=trace_id, target=intent["target"], intent=intent)
-
-            # 判官模块: 用 target 字段决定交给聊天模块还是指令模块。
-            if intent["target"] == "noop":
-                log_flow(stage="judge.noop", trace_id=trace_id, reason=intent.get("reason", ""))
+            agent_response = await agent.run(event_payload, trace_id=trace_id)
+            if not agent_response.should_send:
+                log_flow(stage="agent.noop", trace_id=trace_id)
                 return
-            if intent["target"] in {"tool_selector", "command_processor"}:
-                if intent["target"] == "tool_selector":
-                    guide_bundle = await tool_selector.load_tool_guides(intent, event_payload, command_processor)
-                    log_flow(stage="tool_selector.bundle", trace_id=trace_id, guide_bundle=guide_bundle)
-                    tool_history: list[dict] = [{"intent": intent, "command_result": guide_bundle}]
-                else:
-                    command_result = await command_processor.execute(intent, event_payload)
-                    log_flow(stage="command.result", trace_id=trace_id, command_result=command_result)
-                    tool_history = [{"intent": intent, "command_result": command_result}]
 
-                final_reply = ""
+            reply_for_memory = agent_response.text
+            final_reply = _append_token_cost_line(
+                reply_for_memory,
+                agent_response.token_usage,
+                settings.max_reply_chars,
+            )
+            llm.pop_trace_total_tokens(trace_id)
 
-                for round_index in range(settings.max_tool_rounds):
-                    decision = await llm_processor.decide_next_tool_step(
-                        event_payload,
-                        tool_history,
-                        trace_id=trace_id,
-                    )
-                    log_flow(
-                        stage="tool.decision",
-                        trace_id=trace_id,
-                        round=round_index + 1,
-                        decision=decision,
-                    )
-
-                    if decision["decision"] == "final":
-                        final_reply = str(decision.get("final_reply", "") or "").strip()
-                        break
-
-                    next_intent = decision["intent"]
-                    if next_intent.get("target") == "tool_selector":
-                        guide_bundle = await tool_selector.load_tool_guides(next_intent, event_payload, command_processor)
-                        log_flow(stage="tool_selector.bundle", trace_id=trace_id, guide_bundle=guide_bundle)
-                        tool_history.append({"intent": next_intent, "command_result": guide_bundle})
-                    else:
-                        command_result = await command_processor.execute(next_intent, event_payload)
-                        log_flow(stage="command.result", trace_id=trace_id, command_result=command_result)
-                        tool_history.append({"intent": next_intent, "command_result": command_result})
-
-                if not final_reply:
-                    final_reply = await llm_processor.render_command_result(
-                        event_payload,
-                        tool_history[-1]["intent"],
-                        tool_history[-1]["command_result"],
-                        trace_id=trace_id,
-                    )
-
-                last_result = tool_history[-1].get("command_result", {}) if tool_history else {}
-                response_type = str(last_result.get("response_type", "text") or "text").strip().lower()
-                image_path = str(last_result.get("image_path", "") or "").strip()
-            else:
-                final_reply = await llm_processor.chat_reply(event_payload, trace_id=trace_id)
-                response_type = "text"
-                image_path = ""
-
-            reply_for_memory = final_reply
-            total_tokens = llm.pop_trace_total_tokens(trace_id)
-            final_reply = _append_token_cost_line(reply_for_memory, total_tokens, settings.max_reply_chars)
-
-            if intent["target"] in {"tool_selector", "command_processor"}:
-                await llm_processor.record_tool_turn(event_payload, reply_for_memory, trace_id=trace_id)
-
-            if response_type == "image" and image_path:
+            if agent_response.response_type == "image" and agent_response.image_path:
                 await sender.send_group_image(
                     group_id=event_payload["group_id"],
-                    image_path=image_path,
+                    image_path=agent_response.image_path,
                     text=final_reply,
                     at_user_id=event_payload["user_id"],
                 )
-                log_flow(stage="sender.sent", trace_id=trace_id, reply=final_reply, image_path=image_path)
+                log_flow(
+                    stage="sender.sent",
+                    trace_id=trace_id,
+                    reply=final_reply,
+                    image_path=agent_response.image_path,
+                )
             else:
                 await sender.send_group_text(
                     group_id=event_payload["group_id"],
