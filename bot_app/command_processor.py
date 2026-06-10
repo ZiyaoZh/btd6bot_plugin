@@ -507,7 +507,7 @@ class CommandProcessor:
         self._chat_monkey_output_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         report_path = (self._chat_monkey_output_dir / f"bot_open_result_{stamp}.md").resolve()
-        image_path = (self._chat_monkey_output_dir / f"bot_open_result_{stamp}.webp").resolve()
+        image_path = (self._chat_monkey_output_dir / f"bot_open_result_{stamp}.png").resolve()
 
         cmd = [
             sys.executable,

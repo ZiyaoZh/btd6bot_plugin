@@ -15,6 +15,7 @@ from bot_app.agent.tool_registry import ToolRegistry  # noqa: E402
 from bot_app.llm_client import LLMClient, LLMResponse, LLMToolCall  # noqa: E402
 from bot_app.memory import GroupChatMemory  # noqa: E402
 from bot_app.protocol import CommandResultPayload, EventPayload, IntentPayload  # noqa: E402
+from bot_app.sender import MessageSender  # noqa: E402
 from bot_app.settings import AppSettings  # noqa: E402
 
 
@@ -123,6 +124,23 @@ class FakeContextManager:
         return False
 
 
+class FakeQQApi:
+    def __init__(self) -> None:
+        self.group_text_calls: list[dict[str, Any]] = []
+        self.group_array_calls: list[tuple[str, Any]] = []
+
+    async def post_group_msg(self, **kwargs: Any) -> None:
+        self.group_text_calls.append(kwargs)
+
+    async def post_group_array_msg(self, group_id: str, message: Any) -> None:
+        self.group_array_calls.append((group_id, message))
+
+
+class FakeBot:
+    def __init__(self) -> None:
+        self.api = type("FakeApi", (), {"qq": FakeQQApi()})()
+
+
 def _assistant_response(
     content: str, tool_calls: list[LLMToolCall] | None = None
 ) -> LLMResponse:
@@ -209,6 +227,28 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["data"]["manual_full_text"], "启动方式：运行 main.py")
         self.assertEqual(command_processor.calls, [])
+
+    async def test_sender_uses_rich_message_api_for_group_image(self) -> None:
+        bot = FakeBot()
+        sender = MessageSender(bot)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "result.png"
+            image_path.write_bytes(b"fake image bytes")
+
+            await sender.send_group_image(
+                group_id="1000",
+                image_path=str(image_path),
+                text="图片说明",
+                at_user_id="2000",
+            )
+
+        qq = bot.api.qq
+        self.assertEqual(qq.group_text_calls, [])
+        self.assertEqual(len(qq.group_array_calls), 1)
+        group_id, message = qq.group_array_calls[0]
+        self.assertEqual(group_id, "1000")
+        self.assertTrue(hasattr(message, "add_image"))
 
     async def test_agent_executes_tool_call_and_returns_final_text(self) -> None:
         command_processor = FakeCommandProcessor()
