@@ -1,3 +1,9 @@
+"""Historical command-guide selector.
+
+The current runtime tool protocol is ToolRegistry. This module is retained for
+legacy callers that still drive the old tool_selector -> command_processor flow.
+"""
+
 from __future__ import annotations
 
 from .command_processor import CommandProcessor
@@ -14,7 +20,11 @@ class ToolSelector:
             "chat_summary": ["summarize_recent_messages"],
             "script_manual": ["script_manual_query"],
             "game_knowledge": ["search_game_knowledge", "read_game_knowledge_file"],
-            "game_news": ["get_activity_detail", "get_activity_leaderboard", "get_collection_event_info"],
+            "game_news": [
+                "get_activity_detail",
+                "get_activity_leaderboard",
+                "get_collection_event_info",
+            ],
             "mini_game": ["simulate_monkey_box_opening"],
         }
 
@@ -94,7 +104,9 @@ class ToolSelector:
                     "command": command_name,
                     "ok": bool(result.get("ok", False)),
                     "message": str(result.get("message", "") or ""),
-                    "guide_text": str(result.get("data", {}).get("guide_text", "") or ""),
+                    "guide_text": str(
+                        result.get("data", {}).get("guide_text", "") or ""
+                    ),
                 }
             )
 

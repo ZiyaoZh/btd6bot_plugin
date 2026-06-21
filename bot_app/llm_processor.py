@@ -1,3 +1,9 @@
+"""Historical two-step LLM router.
+
+The runtime entry points now use AgentRunner with native tool_calls. This file
+is retained for legacy imports and comparison with the old command pipeline.
+"""
+
 from __future__ import annotations
 
 import json
@@ -21,7 +27,9 @@ class LLMMessageProcessor:
         self._llm = llm
         self._memory = memory
         self._settings = settings
-        self._context_manager = context_manager or ContextManager(llm=llm, settings=settings)
+        self._context_manager = context_manager or ContextManager(
+            llm=llm, settings=settings
+        )
 
     def _style_constraint(self) -> str:
         return (
@@ -76,8 +84,8 @@ class LLMMessageProcessor:
             "你是任务编排器，需要在“继续调用工具/指令”与“直接给最终答复”之间做决策。"
             "你必须只输出 JSON，不要输出 Markdown。"
             "输出格式二选一:"
-            "A) {\"decision\":\"call_command\",\"intent\":{module,target,intent,arguments,reply,reason}}"
-            "B) {\"decision\":\"final\",\"final_reply\":\"...\"}"
+            'A) {"decision":"call_command","intent":{module,target,intent,arguments,reply,reason}}'
+            'B) {"decision":"final","final_reply":"..."}'
             "其中 intent.target 只能是 command_processor 或 tool_selector。"
             "当 target=command_processor 时，intent 必须来自当前 tool_history 里最近一次 tool_selector.load_tool_guides 给出的 guides。"
             "若当前信息不足以回答用户，优先 call_command。"
@@ -155,7 +163,9 @@ class LLMMessageProcessor:
             user_text=user_payload,
         )
 
-    async def record_tool_turn(self, event: EventPayload, assistant_text: str, trace_id: str = "") -> None:
+    async def record_tool_turn(
+        self, event: EventPayload, assistant_text: str, trace_id: str = ""
+    ) -> None:
         user_text_for_memory = self._build_user_turn_text(event)
         self._memory.append_turn(
             group_id=event["group_id"],
@@ -170,15 +180,21 @@ class LLMMessageProcessor:
             trace_id=trace_id,
         )
 
-    async def plan_intent(self, event: EventPayload, trace_id: str = "") -> IntentPayload:
+    async def plan_intent(
+        self, event: EventPayload, trace_id: str = ""
+    ) -> IntentPayload:
         planner_messages = await self._build_memory_messages(
             system_prompt=self._intent_router_prompt(),
             event=event,
-            user_payload=json.dumps({"stage": "intent_router", "event": event}, ensure_ascii=False),
+            user_payload=json.dumps(
+                {"stage": "intent_router", "event": event}, ensure_ascii=False
+            ),
             trace_id=trace_id,
         )
 
-        raw = await self._llm.chat(planner_messages, trace_id=trace_id, purpose="intent_planning")
+        raw = await self._llm.chat(
+            planner_messages, trace_id=trace_id, purpose="intent_planning"
+        )
         parsed = self._safe_parse_intent(raw)
         if trace_id:
             log_flow(
@@ -246,7 +262,9 @@ class LLMMessageProcessor:
             ),
             trace_id=trace_id,
         )
-        text = await self._llm.chat(messages, trace_id=trace_id, purpose="command_render")
+        text = await self._llm.chat(
+            messages, trace_id=trace_id, purpose="command_render"
+        )
         text = self._normalize_plain_text(text)
         if not text:
             text = command_result.get("message", "指令执行完成。")
@@ -287,14 +305,18 @@ class LLMMessageProcessor:
             decision = "final"
 
         if decision == "final":
-            final_reply = self._normalize_plain_text(str(parsed.get("final_reply", "")).strip())
+            final_reply = self._normalize_plain_text(
+                str(parsed.get("final_reply", "")).strip()
+            )
             return {"decision": "final", "final_reply": final_reply}
 
         intent = parsed.get("intent", {})
         if not isinstance(intent, dict):
             intent = {}
 
-        target = str(intent.get("target", "command_processor") or "command_processor").strip()
+        target = str(
+            intent.get("target", "command_processor") or "command_processor"
+        ).strip()
         if target not in {"command_processor", "tool_selector"}:
             target = "command_processor"
 
@@ -302,7 +324,9 @@ class LLMMessageProcessor:
             "module": "llm_processor",
             "target": target,
             "intent": str(intent.get("intent", "")).strip() or "list_features",
-            "arguments": intent.get("arguments", {}) if isinstance(intent.get("arguments", {}), dict) else {},
+            "arguments": intent.get("arguments", {})
+            if isinstance(intent.get("arguments", {}), dict)
+            else {},
             "reply": str(intent.get("reply", "")).strip(),
             "reason": str(intent.get("reason", "")).strip() or "tool planning",
         }

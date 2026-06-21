@@ -8,7 +8,6 @@ from uuid import uuid4
 from ncatbot.core import BotClient
 from ncatbot.event.qq import GroupMessageEvent
 
-from .command_processor import CommandProcessor
 from .db_manager import BotDatabase
 from .llm_client import LLMClient, LLMRequestError
 from .agent import AgentRunner
@@ -18,6 +17,7 @@ from .memory import GroupChatMemory
 from .receiver import GroupMessageReceiver
 from .sender import MessageSender
 from .settings import load_settings
+from .tools import ToolRuntime
 
 
 def create_bot() -> BotClient:
@@ -30,8 +30,9 @@ def create_bot() -> BotClient:
     sender = MessageSender(bot)
     memory = GroupChatMemory(history_turns=settings.history_turns)
     llm = LLMClient(settings=settings)
-    command_processor = CommandProcessor(
+    tool_runtime = ToolRuntime.create(
         db=db,
+        plugin_root=Path(__file__).resolve().parent.parent,
         manual_file=settings.manual_file,
         command_guide_dir=settings.command_guide_dir,
     )
@@ -39,7 +40,7 @@ def create_bot() -> BotClient:
         llm=llm,
         memory=memory,
         settings=settings,
-        tool_registry=ToolRegistry(command_processor),
+        tool_registry=ToolRegistry(tool_runtime),
     )
     bot_enabled = True
 

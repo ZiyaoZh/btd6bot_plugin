@@ -33,7 +33,7 @@
 
 - `bot_app/`: 插件内核心业务模块。
 - `bot_app/agent/`: tool-calling Agent、工具注册表、提示词管理与响应类型。
-- `bot_app/tools/`: 具体 tool 定义，按功能域维护工具 schema 与 handler；低风险工具已直接在该层执行业务逻辑，外部 CLI/知识库类工具暂复用 `CommandProcessor` 适配。
+- `bot_app/tools/`: 具体 tool 定义，按功能域维护工具 schema、handler 与 service；外部 CLI、知识库、小游戏等业务逻辑均在该层直接执行，`CommandProcessor` 仅保留旧意图协议兼容入口。
 - `btd6_api_processor/`: 活动与榜单数据处理。
 - `btd6_knowledge_base/`: 本地知识库与索引。
 - `command_skills/`: 指令技能文档，保留为人工参考；运行时工具协议以 `ToolRegistry` 为准。

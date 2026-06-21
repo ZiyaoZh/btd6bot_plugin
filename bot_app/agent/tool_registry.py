@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..command_processor import CommandProcessor
 from ..protocol import CommandResultPayload, EventPayload
 from ..tools import (
     ConcreteTool,
@@ -14,14 +13,15 @@ from ..tools import (
     build_manual_tools,
     build_mini_game_tools,
     build_social_tools,
+    fail_result,
+    normalize_result,
 )
 from .types import ToolHandler, ToolSpec
 
 
 class ToolRegistry:
-    def __init__(self, command_processor: CommandProcessor) -> None:
-        self._command_processor = command_processor
-        self._runtime = ToolRuntime.from_command_processor(command_processor)
+    def __init__(self, runtime: ToolRuntime) -> None:
+        self._runtime = runtime
         self._specs: dict[str, ToolSpec] = {}
         self._handlers: dict[str, ToolHandler] = {}
         self._register_tools(self._build_tools())
@@ -47,17 +47,15 @@ class ToolRegistry:
     ) -> CommandResultPayload:
         handler = self._handlers.get(name)
         if handler is None:
-            return {
-                "module": "tool_registry",
-                "ok": False,
-                "command": name,
-                "data": {"arguments": arguments},
-                "message": f"未知工具: {name}",
-                "extra_prompt": "请改用可用工具，或直接说明暂不支持该能力。",
-                "response_type": "text",
-                "image_path": "",
-            }
-        return await handler(arguments, event)
+            return fail_result(
+                module="tool_registry",
+                command=name,
+                data={"arguments": arguments},
+                message=f"未知工具: {name}",
+                extra_prompt="请改用可用工具，或直接说明暂不支持该能力。",
+            )
+        result = await handler(arguments, event)
+        return normalize_result(result, default_module="tool", default_command=name)
 
     def _register_tools(self, tools: list[ConcreteTool]) -> None:
         for tool in tools:

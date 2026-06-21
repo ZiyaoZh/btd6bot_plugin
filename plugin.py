@@ -11,7 +11,6 @@ from ncatbot.core import registrar
 from ncatbot.event.qq import GroupMessageEvent
 from ncatbot.plugin import NcatBotPlugin
 
-from .bot_app.command_processor import CommandProcessor
 from .bot_app.db_manager import BotDatabase
 from .bot_app.llm_client import LLMClient, LLMRequestError
 from .bot_app.agent import AgentRunner
@@ -21,6 +20,7 @@ from .bot_app.memory import GroupChatMemory
 from .bot_app.receiver import GroupMessageReceiver
 from .bot_app.sender import MessageSender
 from .bot_app.settings import AppSettings, load_settings
+from .bot_app.tools import ToolRuntime
 
 
 DEFAULT_DAILY_ACTIVITY_BRIEF_PROMPT = (
@@ -74,8 +74,9 @@ class Btd6BotPlugin(NcatBotPlugin):
         self._sender = MessageSender(_PluginBotProxy(self.api))
         memory = GroupChatMemory(history_turns=self._settings.history_turns)
         self._llm = LLMClient(settings=self._settings)
-        self._command_processor = CommandProcessor(
+        tool_runtime = ToolRuntime.create(
             db=db,
+            plugin_root=Path(__file__).resolve().parent,
             manual_file=self._settings.manual_file,
             command_guide_dir=self._settings.command_guide_dir,
         )
@@ -83,7 +84,7 @@ class Btd6BotPlugin(NcatBotPlugin):
             llm=self._llm,
             memory=memory,
             settings=self._settings,
-            tool_registry=ToolRegistry(self._command_processor),
+            tool_registry=ToolRegistry(tool_runtime),
         )
         self._bot_enabled = True
         self._daily_activity_brief_config = self._load_daily_activity_brief_config()

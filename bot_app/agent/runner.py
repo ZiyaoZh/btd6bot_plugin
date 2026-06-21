@@ -44,6 +44,7 @@ class AgentRunner:
         token_usage = 0
         tool_records: list[ToolCallRecord] = []
         last_command_result: CommandResultPayload | None = None
+        last_image_result: CommandResultPayload | None = None
 
         for round_index in range(self._settings.max_tool_rounds + 1):
             response = await self._llm.chat_completion(
@@ -71,11 +72,9 @@ class AgentRunner:
             if not response.tool_calls:
                 text = self._normalize_plain_text(response.content)
                 text = text or self._fallback_text(last_command_result)
-                response_type = str(
-                    (last_command_result or {}).get("response_type", "text") or "text"
-                ).lower()
-                image_path = str(
-                    (last_command_result or {}).get("image_path", "") or ""
+                response_type, image_path = self._response_metadata(
+                    last_command_result=last_command_result,
+                    last_image_result=last_image_result,
                 )
                 await self._record_turn(event, text, trace_id=trace_id)
                 return AgentResponse(
@@ -93,6 +92,8 @@ class AgentRunner:
                     tool_call.name, arguments, event
                 )
                 last_command_result = command_result
+                if self._is_image_result(command_result):
+                    last_image_result = command_result
                 tool_records.append(
                     ToolCallRecord(
                         name=tool_call.name,
@@ -130,10 +131,10 @@ class AgentRunner:
                 )
 
         text = self._fallback_text(last_command_result)
-        response_type = str(
-            (last_command_result or {}).get("response_type", "text") or "text"
-        ).lower()
-        image_path = str((last_command_result or {}).get("image_path", "") or "")
+        response_type, image_path = self._response_metadata(
+            last_command_result=last_command_result,
+            last_image_result=last_image_result,
+        )
         await self._record_turn(event, text, trace_id=trace_id)
         return AgentResponse(
             text=text[: self._settings.max_reply_chars],
@@ -186,6 +187,27 @@ class AgentRunner:
         if command_result.get("ok", False):
             return message or "工具执行完成。"
         return message or "工具执行失败，请稍后重试。"
+
+    def _response_metadata(
+        self,
+        *,
+        last_command_result: CommandResultPayload | None,
+        last_image_result: CommandResultPayload | None,
+    ) -> tuple[str, str]:
+        if last_image_result is not None:
+            return "image", str(last_image_result.get("image_path", "") or "")
+        response_type = str(
+            (last_command_result or {}).get("response_type", "text") or "text"
+        ).lower()
+        image_path = str((last_command_result or {}).get("image_path", "") or "")
+        return response_type, image_path
+
+    def _is_image_result(self, command_result: CommandResultPayload) -> bool:
+        return str(
+            command_result.get("response_type", "") or ""
+        ).lower() == "image" and bool(
+            str(command_result.get("image_path", "") or "").strip()
+        )
 
     def _serialize_tool_result(self, result: CommandResultPayload) -> str:
         return json.dumps(result, ensure_ascii=False, default=str)
