@@ -217,7 +217,4 @@ __marimo__/
 
 logs/*
 data/*
-btd6_api_processor/
-btd6_knowledge_base/
-ChatMonkeyTD/
 .agents/

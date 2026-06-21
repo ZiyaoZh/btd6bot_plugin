@@ -1,0 +1,9 @@
+[submodule "btd6_api_processor"]
+	path = btd6_api_processor
+	url = https://github.com/ZiyaoZh/btd6_api_processor
+[submodule "btd6_knowledge_base"]
+	path = btd6_knowledge_base
+	url = https://github.com/ZiyaoZh/btd6_knowledge_base
+[submodule "ChatMonkeyTD"]
+	path = ChatMonkeyTD
+	url = https://github.com/ZiyaoZh/ChatMonkeyTD
