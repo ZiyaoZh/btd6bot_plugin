@@ -79,7 +79,11 @@ class GroupMessageReceiver:
     def sync_message_to_db(self, msg: GroupMessageEvent) -> None:
         if self._db is None:
             return
-        self._db.record_group_message(msg)
+        self._db.record_group_message(
+            msg,
+            bot_qq=self._settings.bot_qq,
+            bot_name=self._settings.bot_name,
+        )
 
     def normalize_text(self, raw_text: str) -> str:
         text = (raw_text or "").strip()

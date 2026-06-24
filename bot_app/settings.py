@@ -29,12 +29,13 @@ class AppSettings:
     proactive_chat_enabled: bool = True
     db_file: str = "data/bot_data.db"
     flow_log_file: str = "logs/network.log"
-    context_compact_max_chars: int = 100000
+    context_compact_max_chars: int = 12000
     context_compact_keep_recent_turns: int = 10
     context_compact_summary_max_chars: int = 360
     context_compact_model: str = ""
     context_compact_api_base_url: str = ""
     context_compact_api_key: str = ""
+    recent_group_window_size: int = 10
 
 
 def _read_prompt_from_file(path: Path) -> str:
@@ -134,12 +135,13 @@ def load_settings(env_path: str = ".env") -> AppSettings:
     }
     db_file = os.getenv("BOT_DB_FILE", "data/bot_data.db").strip() or "data/bot_data.db"
     flow_log_file = os.getenv("BOT_FLOW_LOG_FILE", "logs/network.log").strip() or "logs/network.log"
-    context_compact_max_chars = int(os.getenv("LLM_CONTEXT_COMPACT_MAX_CHARS", "100000"))
+    context_compact_max_chars = int(os.getenv("LLM_CONTEXT_COMPACT_MAX_CHARS", "12000"))
     context_compact_keep_recent_turns = int(os.getenv("LLM_CONTEXT_COMPACT_KEEP_RECENT_TURNS", "10"))
     context_compact_summary_max_chars = int(os.getenv("LLM_CONTEXT_COMPACT_SUMMARY_MAX_CHARS", "360"))
     context_compact_model = os.getenv("LLM_CONTEXT_COMPACT_MODEL", "").strip()
     context_compact_api_base_url = os.getenv("LLM_CONTEXT_COMPACT_API_BASE_URL", "").strip()
     context_compact_api_key = os.getenv("LLM_CONTEXT_COMPACT_API_KEY", "").strip()
+    recent_group_window_size = int(os.getenv("BOT_RECENT_GROUP_WINDOW_SIZE", "10"))
 
     return AppSettings(
         env_file=str(Path(env_path).resolve()),
@@ -169,4 +171,5 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         context_compact_model=context_compact_model,
         context_compact_api_base_url=context_compact_api_base_url,
         context_compact_api_key=context_compact_api_key,
+        recent_group_window_size=max(1, min(recent_group_window_size, 20)),
     )

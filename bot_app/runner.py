@@ -41,6 +41,7 @@ def create_bot() -> BotClient:
         memory=memory,
         settings=settings,
         tool_registry=ToolRegistry(tool_runtime),
+        tool_runtime=tool_runtime,
     )
     bot_enabled = True
 

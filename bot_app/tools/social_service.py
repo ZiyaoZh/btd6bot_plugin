@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..group_context import build_recent_group_window
 from ..protocol import CommandResultPayload, EventPayload
 from .base import fail_result, ok_result
 
@@ -79,16 +80,13 @@ def build_summarize_recent_messages_result(
         )
 
     compact_messages = []
-    for row in rows:
-        display_name = (
-            str(row.get("sender_card", "") or "").strip()
-            or str(row.get("sender_nickname", "") or "").strip()
-        )
+    for item in build_recent_group_window(rows, limit=top_n):
         compact_messages.append(
             {
-                "display_name": display_name,
-                "text": str(row.get("raw_message", "") or "").strip(),
-                "created_at": str(row.get("created_at", "") or ""),
+                "display_name": str(item.get("speaker", "") or ""),
+                "text": str(item.get("cleaned_text", "") or ""),
+                "created_at": str(item.get("created_at", "") or ""),
+                "mention_relation": str(item.get("mention_relation", "") or ""),
             }
         )
 

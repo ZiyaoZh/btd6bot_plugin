@@ -85,6 +85,7 @@ class Btd6BotPlugin(NcatBotPlugin):
             memory=memory,
             settings=self._settings,
             tool_registry=ToolRegistry(tool_runtime),
+            tool_runtime=tool_runtime,
         )
         self._bot_enabled = True
         self._daily_activity_brief_config = self._load_daily_activity_brief_config()

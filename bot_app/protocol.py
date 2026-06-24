@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
-from typing_extensions import NotRequired
-
-
 class EventPayload(TypedDict):
     module: str
     event_type: str
@@ -25,15 +22,18 @@ class IntentPayload(TypedDict):
     reason: str
 
 
-class CommandResultPayload(TypedDict):
+class _CommandResultPayloadRequired(TypedDict):
     module: str
     ok: bool
     command: str
     data: dict[str, Any]
     message: str
     extra_prompt: str
-    response_type: NotRequired[str]  # text | image
-    image_path: NotRequired[str]
+
+
+class CommandResultPayload(_CommandResultPayloadRequired, total=False):
+    response_type: str  # text | image | none
+    image_path: str
 
 
 class AdminControlPayload(TypedDict):

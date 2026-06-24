@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 
+from .context_contracts import serialize_compact_user_event
 from .context_manager import ContextManager
 from .llm_client import LLMClient
 from .logging_utils import log_flow
@@ -132,16 +133,7 @@ class LLMMessageProcessor:
         return "\n".join(lines)
 
     def _build_user_turn_text(self, event: EventPayload) -> str:
-        return json.dumps(
-            {
-                "identity": event["identity"],
-                "group_id": event["group_id"],
-                "user_id": event["user_id"],
-                "text": event["text"],
-                "bot_mentioned": event["bot_mentioned"],
-            },
-            ensure_ascii=False,
-        )
+        return serialize_compact_user_event(event)
 
     async def _build_memory_messages(
         self,

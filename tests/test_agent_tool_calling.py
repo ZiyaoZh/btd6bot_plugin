@@ -11,8 +11,18 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT))
 
 from bot_app.agent.runner import AgentRunner  # noqa: E402
+from bot_app.agent.prompt_manager import PromptManager  # noqa: E402
 from bot_app.agent.tool_registry import ToolRegistry  # noqa: E402
+from bot_app.context_contracts import (  # noqa: E402
+    build_user_session_memory_context,
+    serialize_session_summary,
+)
 from bot_app.command_processor import CommandProcessor  # noqa: E402
+from bot_app.context_manager import ContextManager  # noqa: E402
+from bot_app.group_context import (  # noqa: E402
+    build_message_record_metadata,
+    build_recent_group_window,
+)
 from bot_app.llm_client import LLMClient, LLMResponse, LLMToolCall  # noqa: E402
 from bot_app.memory import GroupChatMemory  # noqa: E402
 from bot_app.protocol import CommandResultPayload, EventPayload, IntentPayload  # noqa: E402
@@ -20,6 +30,7 @@ from bot_app.sender import MessageSender  # noqa: E402
 from bot_app.settings import AppSettings  # noqa: E402
 from bot_app.tools import ToolRuntime  # noqa: E402
 from bot_app.tools.features import get_feature_catalog  # noqa: E402
+from bot_app.tools.social_service import build_summarize_recent_messages_result  # noqa: E402
 from bot_app.tools.subprocess_runner import ProcessResult  # noqa: E402
 
 
@@ -86,10 +97,16 @@ class FakeDb:
         ]
         self.recent_rows = [
             {
+                "message_id": "m1",
                 "sender_card": "A",
                 "sender_nickname": "",
                 "raw_message": "hello",
+                "normalized_text": "hello",
+                "mention_relation": "none",
+                "is_text_meaningful": 1,
+                "message_type": "text",
                 "created_at": "2026-06-10 10:00:00",
+                "user_id": "1",
             }
         ]
 
@@ -112,6 +129,13 @@ class FakeLLM:
         if not self.responses:
             raise AssertionError("unexpected extra LLM call")
         return self.responses.pop(0)
+
+    async def chat_with_override(self, **kwargs: Any) -> str:
+        self.requests.append(kwargs)
+        if not self.responses:
+            raise AssertionError("unexpected extra LLM call")
+        response = self.responses.pop(0)
+        return response.content
 
 
 class FakeContextManager:
@@ -284,6 +308,26 @@ def _assistant_response(
         total_tokens=17,
         raw={"choices": [{"message": assistant_message}]},
         model="fake-model",
+    )
+
+
+def _planning_response(
+    decision: str,
+    *,
+    reason: str = "",
+    draft_reply: str = "",
+    tool_calls: list[dict[str, Any]] | None = None,
+) -> LLMResponse:
+    return _assistant_response(
+        json.dumps(
+            {
+                "decision": decision,
+                "reason": reason,
+                "draft_reply": draft_reply,
+                "tool_calls": tool_calls or [],
+            },
+            ensure_ascii=False,
+        )
     )
 
 
@@ -633,16 +677,11 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         registry = ToolRegistry(_runtime(command_processor))
         llm = FakeLLM(
             [
-                _assistant_response(
-                    "",
-                    [
-                        LLMToolCall(
-                            id="call_1",
-                            name="list_features",
-                            arguments="{}",
-                        )
-                    ],
+                _planning_response(
+                    "call_tools",
+                    tool_calls=[{"name": "list_features", "arguments": {}}],
                 ),
+                _planning_response("final", reason="工具结果已足够"),
                 _assistant_response("功能已列出"),
             ]
         )
@@ -652,6 +691,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             memory=GroupChatMemory(history_turns=3),
             settings=_settings(),
             tool_registry=registry,
+            tool_runtime=_runtime(command_processor, db=FakeDb()),
             context_manager=context_manager,  # type: ignore[arg-type]
         )
 
@@ -659,37 +699,42 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(response.should_send)
         self.assertEqual(response.text, "功能已列出")
-        self.assertEqual(response.token_usage, 34)
+        self.assertEqual(response.token_usage, 51)
         self.assertEqual(command_processor.calls, [])
-        self.assertIn("tools", llm.requests[0])
-        self.assertTrue(
-            any(
-                tool["function"]["name"] == "list_features"
-                for tool in llm.requests[0]["tools"]
-            )
-        )
         self.assertEqual(
             context_manager.calls,
             [("1000", "2000", "test-trace"), ("1000", "2000", "test-trace")],
+        )
+        self.assertEqual(llm.requests[0]["purpose"], "agent_planning")
+        self.assertEqual(llm.requests[1]["purpose"], "agent_planning")
+        self.assertEqual(llm.requests[2]["purpose"], "agent_rendering")
+        request_messages = llm.requests[0]["messages"]
+        self.assertEqual(request_messages[-1]["role"], "user")
+        user_payload = json.loads(request_messages[-1]["content"])
+        self.assertEqual(user_payload["task"], "agent_planning")
+        self.assertIn("reply_context", user_payload)
+        self.assertEqual(
+            user_payload["reply_context"]["current_event"]["text"],
+            "你会什么",
+        )
+        self.assertEqual(
+            user_payload["reply_context"]["recent_group_window"],
+            [
+                {
+                    "message_id": "m1",
+                    "speaker": "A",
+                    "cleaned_text": "hello",
+                    "created_at": "2026-06-10 10:00:00",
+                    "mention_relation": "none",
+                    "sequence": 1,
+                }
+            ],
         )
 
     async def test_ignore_message_tool_suppresses_send(self) -> None:
         command_processor = FakeCommandProcessor()
         registry = ToolRegistry(_runtime(command_processor))
-        llm = FakeLLM(
-            [
-                _assistant_response(
-                    "",
-                    [
-                        LLMToolCall(
-                            id="call_1",
-                            name="ignore_message",
-                            arguments='{"reason":"闲聊"}',
-                        )
-                    ],
-                )
-            ]
-        )
+        llm = FakeLLM([_planning_response("ignore", reason="普通闲聊")])
         runner = AgentRunner(
             llm=llm,  # type: ignore[arg-type]
             memory=GroupChatMemory(history_turns=3),
@@ -703,6 +748,47 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(response.should_send)
         self.assertEqual(response.response_type, "none")
         self.assertEqual(command_processor.calls, [])
+
+    async def test_reply_direct_returns_without_tool_or_rendering(self) -> None:
+        command_processor = FakeCommandProcessor()
+        registry = ToolRegistry(_runtime(command_processor))
+        llm = FakeLLM(
+            [_planning_response("reply_direct", draft_reply="我在，有什么事？")]
+        )
+        runner = AgentRunner(
+            llm=llm,  # type: ignore[arg-type]
+            memory=GroupChatMemory(history_turns=3),
+            settings=_settings(),
+            tool_registry=registry,
+            context_manager=FakeContextManager(),  # type: ignore[arg-type]
+        )
+
+        response = await runner.run(_event("在吗"), trace_id="test-trace")
+
+        self.assertTrue(response.should_send)
+        self.assertEqual(response.text, "我在，有什么事？")
+        self.assertEqual(response.response_type, "text")
+        self.assertEqual(response.token_usage, 17)
+        self.assertEqual(command_processor.calls, [])
+        self.assertEqual(len(llm.requests), 1)
+        self.assertEqual(llm.requests[0]["purpose"], "agent_planning")
+
+    def test_planning_prompt_includes_router_tool_hints(self) -> None:
+        settings = AppSettings(
+            **{
+                **_settings().__dict__,
+                "router_tool_hints_prompt": "活动查询优先使用 game_news",
+            }
+        )
+        manager = PromptManager(settings)
+
+        prompt = manager.build_planning_prompt(_event())
+
+        self.assertIn("活动查询优先使用 game_news", prompt)
+        self.assertIn("ignore 规则", prompt)
+        self.assertIn("闲聊规则", prompt)
+        self.assertIn("工具规则", prompt)
+        self.assertIn("完成规则", prompt)
 
     async def test_image_tool_result_is_returned_with_final_text(self) -> None:
         command_processor = FakeCommandProcessor()
@@ -723,16 +809,16 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             )
             llm = FakeLLM(
                 [
-                    _assistant_response(
-                        "",
-                        [
-                            LLMToolCall(
-                                id="call_1",
-                                name="get_activity_leaderboard",
-                                arguments='{"leaderboard_type":"race"}',
-                            )
+                    _planning_response(
+                        "call_tools",
+                        tool_calls=[
+                            {
+                                "name": "get_activity_leaderboard",
+                                "arguments": {"leaderboard_type": "race"},
+                            }
                         ],
                     ),
+                    _planning_response("final", reason="已有图片工具结果"),
                     _assistant_response("竞速排行榜来啦"),
                 ]
             )
@@ -784,21 +870,20 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             )
             llm = FakeLLM(
                 [
-                    _assistant_response(
-                        "",
-                        [
-                            LLMToolCall(
-                                id="call_1",
-                                name="get_activity_leaderboard",
-                                arguments='{"leaderboard_type":"race"}',
-                            ),
-                            LLMToolCall(
-                                id="call_2",
-                                name="search_game_knowledge",
-                                arguments='{"query":"竞速"}',
-                            ),
+                    _planning_response(
+                        "call_tools",
+                        tool_calls=[
+                            {
+                                "name": "get_activity_leaderboard",
+                                "arguments": {"leaderboard_type": "race"},
+                            },
+                            {
+                                "name": "search_game_knowledge",
+                                "arguments": {"query": "竞速"},
+                            },
                         ],
                     ),
+                    _planning_response("final", reason="图片和文本资料都已齐全"),
                     _assistant_response("竞速排行榜和相关资料都整理好了"),
                 ]
             )
@@ -843,6 +928,316 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parsed[0].id, "call_1")
         self.assertEqual(parsed[0].name, "today_most_active")
         self.assertEqual(parsed[0].arguments, '{"top_n":5}')
+
+    def test_group_chat_memory_stores_compact_user_event(self) -> None:
+        memory = GroupChatMemory(history_turns=3)
+
+        memory.append_turn(
+            group_id="1000",
+            user_id="2000",
+            user_text=json.dumps(
+                {
+                    "kind": "user_event",
+                    "event": {
+                        "group_id": "1000",
+                        "user_id": "2000",
+                        "text": "查今天活动",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            assistant_text="我来查一下",
+        )
+
+        history = memory.get_history("1000", "2000")
+        self.assertEqual(len(history), 2)
+        stored_payload = json.loads(history[0]["content"])
+        self.assertEqual(stored_payload["kind"], "user_event")
+        self.assertEqual(stored_payload["event"]["text"], "查今天活动")
+        self.assertNotIn("instruction", stored_payload)
+
+    def test_build_user_session_memory_context_extracts_recent_turns_and_summary(
+        self,
+    ) -> None:
+        history = [
+            {"role": "assistant", "content": "[历史会话摘要] 用户最近在问活动时间"},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "kind": "user_event",
+                        "event": {"text": "今天 boss 开了吗"},
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+            {"role": "assistant", "content": "我帮你查活动"},
+        ]
+
+        session_memory = build_user_session_memory_context(history, recent_turn_limit=6)
+
+        self.assertEqual(
+            session_memory["summary"]["raw_summary"], "用户最近在问活动时间"
+        )
+        self.assertEqual(
+            session_memory["recent_turns"],
+            [
+                {"role": "user", "turn_type": "user_event", "text": "今天 boss 开了吗"},
+                {"role": "assistant", "turn_type": "assistant_reply", "text": "我帮你查活动"},
+            ],
+        )
+
+    def test_build_user_session_memory_context_reads_structured_session_summary(
+        self,
+    ) -> None:
+        history = [
+            {
+                "role": "assistant",
+                "content": serialize_session_summary(
+                    {
+                        "user_preferences": ["喜欢简短回答"],
+                        "open_loops": ["等 boss 时间"],
+                        "established_facts": ["用户在问活动"],
+                        "recent_topic": "活动查询",
+                        "restrictions": ["不要编造"],
+                        "raw_summary": "用户最近在查活动时间。",
+                    }
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "kind": "user_event",
+                        "event": {"text": "今天 race 有吗"},
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+
+        session_memory = build_user_session_memory_context(history, recent_turn_limit=6)
+
+        self.assertEqual(
+            session_memory["summary"],
+            {
+                "user_preferences": ["喜欢简短回答"],
+                "open_loops": ["等 boss 时间"],
+                "established_facts": ["用户在问活动"],
+                "recent_topic": "活动查询",
+                "restrictions": ["不要编造"],
+                "raw_summary": "用户最近在查活动时间。",
+            },
+        )
+        self.assertEqual(
+            session_memory["recent_turns"],
+            [{"role": "user", "turn_type": "user_event", "text": "今天 race 有吗"}],
+        )
+
+    def test_build_recent_group_window_cleans_cq_and_marks_mentions(self) -> None:
+        window = build_recent_group_window(
+            [
+                {
+                    "message_id": "m1",
+                    "user_id": "1",
+                    "sender_card": "A",
+                    "sender_nickname": "",
+                    "raw_message": "[CQ:at,qq=999] 你好 [CQ:image,file=a.png]",
+                    "normalized_text": "你好",
+                    "mention_relation": "mention_bot",
+                    "created_at": "2026-06-10 10:00:00",
+                },
+                {
+                    "message_id": "m2",
+                    "user_id": "2",
+                    "sender_card": "",
+                    "sender_nickname": "B",
+                    "raw_message": "   [CQ:image,file=b.png]   ",
+                    "normalized_text": "",
+                    "mention_relation": "none",
+                    "created_at": "2026-06-10 10:01:00",
+                },
+                {
+                    "message_id": "m3",
+                    "user_id": "3",
+                    "sender_card": "",
+                    "sender_nickname": "C",
+                    "raw_message": "[@dummy] @测试机器人 来看下",
+                    "normalized_text": "[@dummy] @测试机器人 来看下",
+                    "mention_relation": "mention_bot",
+                    "created_at": "2026-06-10 10:02:00",
+                },
+            ],
+            limit=10,
+            bot_qq="999",
+            bot_name="测试机器人",
+        )
+
+        self.assertEqual(
+            window,
+            [
+                {
+                    "message_id": "m1",
+                    "speaker": "A",
+                    "cleaned_text": "你好",
+                    "created_at": "2026-06-10 10:00:00",
+                    "mention_relation": "mention_bot",
+                    "sequence": 1,
+                },
+                {
+                    "message_id": "m3",
+                    "speaker": "C",
+                    "cleaned_text": "[@dummy] @测试机器人 来看下",
+                    "created_at": "2026-06-10 10:02:00",
+                    "mention_relation": "mention_bot",
+                    "sequence": 2,
+                },
+            ],
+        )
+
+    async def test_summarize_recent_messages_uses_cleaned_group_window(self) -> None:
+        db = FakeDb()
+        db.recent_rows = [
+            {
+                "message_id": "m1",
+                "user_id": "1",
+                "sender_card": "A",
+                "sender_nickname": "",
+                "raw_message": "[CQ:at,qq=999] 今天打 boss 吗",
+                "normalized_text": "今天打 boss 吗",
+                "mention_relation": "mention_user",
+                "is_text_meaningful": 1,
+                "message_type": "text",
+                "created_at": "2026-06-10 10:00:00",
+            },
+            {
+                "message_id": "m2",
+                "user_id": "2",
+                "sender_card": "",
+                "sender_nickname": "B",
+                "raw_message": "[CQ:image,file=a.png]",
+                "normalized_text": "",
+                "mention_relation": "none",
+                "is_text_meaningful": 0,
+                "message_type": "non_text",
+                "created_at": "2026-06-10 10:01:00",
+            },
+        ]
+
+        result = build_summarize_recent_messages_result(
+            db=db,
+            event=_event("总结最近消息"),
+            arguments={"top_n": 5},
+            module="tool.social",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["message_count"], 1)
+        self.assertEqual(
+            result["data"]["messages"],
+            [
+                {
+                    "display_name": "A",
+                    "text": "今天打 boss 吗",
+                    "created_at": "2026-06-10 10:00:00",
+                    "mention_relation": "mention_user",
+                }
+            ],
+        )
+
+    def test_build_message_record_metadata_marks_meaningful_text_and_mentions(self) -> None:
+        metadata = build_message_record_metadata(
+            "[CQ:at,qq=999]  今天打 boss 吗  [CQ:image,file=a.png]",
+            bot_qq="999",
+            bot_name="测试机器人",
+        )
+
+        self.assertEqual(
+            metadata,
+            {
+                "normalized_text": "今天打 boss 吗",
+                "mention_relation": "mention_bot",
+                "is_text_meaningful": True,
+                "message_type": "text",
+                "mentioned_qqs": ["999"],
+            },
+        )
+
+    async def test_context_manager_writes_structured_summary_message(self) -> None:
+        llm = FakeLLM(
+            [
+                _assistant_response(
+                    json.dumps(
+                        {
+                            "user_preferences": ["喜欢活动简报"],
+                            "open_loops": ["等 boss 轮换"],
+                            "established_facts": ["用户多次问活动"],
+                            "recent_topic": "活动轮换查询",
+                            "restrictions": ["不要编造"],
+                            "raw_summary": "用户最近持续在询问各类活动轮换与开放时间。",
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            ]
+        )
+        settings = _settings()
+        settings = AppSettings(
+            **{
+                **settings.__dict__,
+                "context_compact_max_chars": 30,
+                "context_compact_keep_recent_turns": 1,
+            }
+        )
+        manager = ContextManager(llm=llm, settings=settings)  # type: ignore[arg-type]
+        memory = GroupChatMemory(history_turns=3)
+        memory.replace_history(
+            "1000",
+            "2000",
+            [
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "kind": "user_event",
+                            "event": {"text": "最近 boss 什么时间开"},
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+                {"role": "assistant", "content": "我帮你看下"},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "kind": "user_event",
+                            "event": {"text": "还有 race 呢"},
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+                {"role": "assistant", "content": "我再一起查"},
+            ],
+        )
+
+        changed = await manager.compact_if_needed(
+            memory,
+            group_id="1000",
+            user_id="2000",
+            trace_id="compact-trace",
+        )
+
+        self.assertTrue(changed)
+        history = memory.get_history("1000", "2000")
+        self.assertEqual(history[0]["role"], "assistant")
+        summary_payload = json.loads(history[0]["content"])
+        self.assertEqual(summary_payload["kind"], "session_summary")
+        self.assertEqual(summary_payload["recent_topic"], "活动轮换查询")
+        session_memory = memory.build_user_session_memory_context("1000", "2000")
+        self.assertEqual(
+            session_memory["summary"]["open_loops"],
+            ["等 boss 轮换"],
+        )
 
 
 if __name__ == "__main__":

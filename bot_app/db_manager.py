@@ -8,6 +8,8 @@ from typing import Any
 
 from ncatbot.event.qq import GroupMessageEvent
 
+from .group_context import build_message_record_metadata, serialize_message_record_metadata
+
 
 class BotDatabase:
     """Lightweight SQLite storage for messages and user stats."""
@@ -42,6 +44,10 @@ class BotDatabase:
                     group_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
                     raw_message TEXT NOT NULL DEFAULT '',
+                    normalized_text TEXT NOT NULL DEFAULT '',
+                    mention_relation TEXT NOT NULL DEFAULT 'none',
+                    is_text_meaningful INTEGER NOT NULL DEFAULT 0,
+                    message_type TEXT NOT NULL DEFAULT 'unknown',
                     sender_nickname TEXT DEFAULT '',
                     sender_card TEXT DEFAULT '',
                     created_at TEXT NOT NULL,
@@ -60,17 +66,44 @@ class BotDatabase:
                 CREATE INDEX IF NOT EXISTS idx_messages_group_created
                 ON messages(group_id, created_at);
 
+                CREATE INDEX IF NOT EXISTS idx_messages_group_meaningful_created
+                ON messages(group_id, is_text_meaningful, created_at);
+
                 CREATE INDEX IF NOT EXISTS idx_daily_group_count
                 ON daily_user_stats(group_id, day, message_count DESC);
                 """
             )
+            self._ensure_column(cur, "messages", "normalized_text", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(cur, "messages", "mention_relation", "TEXT NOT NULL DEFAULT 'none'")
+            self._ensure_column(cur, "messages", "is_text_meaningful", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(cur, "messages", "message_type", "TEXT NOT NULL DEFAULT 'unknown'")
             self._conn.commit()
 
-    def record_group_message(self, msg: GroupMessageEvent) -> None:
+    def _ensure_column(
+        self, cur: sqlite3.Cursor, table: str, column: str, definition: str
+    ) -> None:
+        cur.execute(f"PRAGMA table_info({table})")
+        existing_columns = {row[1] for row in cur.fetchall()}
+        if column in existing_columns:
+            return
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    def record_group_message(
+        self,
+        msg: GroupMessageEvent,
+        *,
+        bot_qq: str = "",
+        bot_name: str = "",
+    ) -> None:
         group_id = str(msg.group_id)
         user_id = str(msg.user_id)
         message_id = str(getattr(msg, "message_id", "") or "")
         raw_message = str(getattr(msg, "raw_message", "") or "")
+        metadata = build_message_record_metadata(
+            raw_message,
+            bot_qq=bot_qq,
+            bot_name=bot_name,
+        )
 
         sender = getattr(msg, "sender", None)
         nickname = str(getattr(sender, "nickname", "") or "").strip()
@@ -105,8 +138,10 @@ class BotDatabase:
             cur.execute(
                 """
                 INSERT INTO messages (
-                    message_id, group_id, user_id, raw_message, sender_nickname, sender_card, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    message_id, group_id, user_id, raw_message, normalized_text,
+                    mention_relation, is_text_meaningful, message_type,
+                    sender_nickname, sender_card, created_at, extra_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id, group_id) DO NOTHING
                 """,
                 (
@@ -114,9 +149,14 @@ class BotDatabase:
                     group_id,
                     user_id,
                     raw_message,
+                    str(metadata.get("normalized_text", "") or ""),
+                    str(metadata.get("mention_relation", "none") or "none"),
+                    1 if bool(metadata.get("is_text_meaningful", False)) else 0,
+                    str(metadata.get("message_type", "unknown") or "unknown"),
                     nickname,
                     card,
                     now,
+                    serialize_message_record_metadata(metadata),
                 ),
             )
 
@@ -175,20 +215,30 @@ class BotDatabase:
             cur.execute(
                 """
                 SELECT
+                    t.message_id,
                     t.user_id,
                     t.raw_message,
+                    t.normalized_text,
+                    t.mention_relation,
+                    t.is_text_meaningful,
+                    t.message_type,
                     t.sender_nickname,
                     t.sender_card,
                     t.created_at
                 FROM (
                     SELECT
+                        message_id,
                         user_id,
                         raw_message,
+                        normalized_text,
+                        mention_relation,
+                        is_text_meaningful,
+                        message_type,
                         sender_nickname,
                         sender_card,
                         created_at
                     FROM messages
-                    WHERE group_id = ? AND TRIM(raw_message) <> ''
+                    WHERE group_id = ? AND is_text_meaningful = 1
                     ORDER BY created_at DESC
                     LIMIT ?
                 ) AS t
@@ -202,8 +252,13 @@ class BotDatabase:
         for row in rows:
             result.append(
                 {
+                    "message_id": row["message_id"],
                     "user_id": row["user_id"],
                     "raw_message": row["raw_message"],
+                    "normalized_text": row["normalized_text"],
+                    "mention_relation": row["mention_relation"],
+                    "is_text_meaningful": row["is_text_meaningful"],
+                    "message_type": row["message_type"],
                     "sender_nickname": row["sender_nickname"],
                     "sender_card": row["sender_card"],
                     "created_at": row["created_at"],
