@@ -62,7 +62,22 @@ class BotDatabase:
                     message_count INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(day, group_id, user_id)
                 );
-
+                """
+            )
+            self._ensure_column(
+                cur, "messages", "normalized_text", "TEXT NOT NULL DEFAULT ''"
+            )
+            self._ensure_column(
+                cur, "messages", "mention_relation", "TEXT NOT NULL DEFAULT 'none'"
+            )
+            self._ensure_column(
+                cur, "messages", "is_text_meaningful", "INTEGER NOT NULL DEFAULT 0"
+            )
+            self._ensure_column(
+                cur, "messages", "message_type", "TEXT NOT NULL DEFAULT 'unknown'"
+            )
+            cur.executescript(
+                """
                 CREATE INDEX IF NOT EXISTS idx_messages_group_created
                 ON messages(group_id, created_at);
 
@@ -73,10 +88,6 @@ class BotDatabase:
                 ON daily_user_stats(group_id, day, message_count DESC);
                 """
             )
-            self._ensure_column(cur, "messages", "normalized_text", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(cur, "messages", "mention_relation", "TEXT NOT NULL DEFAULT 'none'")
-            self._ensure_column(cur, "messages", "is_text_meaningful", "INTEGER NOT NULL DEFAULT 0")
-            self._ensure_column(cur, "messages", "message_type", "TEXT NOT NULL DEFAULT 'unknown'")
             self._conn.commit()
 
     def _ensure_column(

@@ -48,6 +48,7 @@ class AgentRunner:
     async def run(self, event: EventPayload, trace_id: str = "") -> AgentResponse:
         await self._compact_if_needed(event, trace_id=trace_id)
         reply_context = self._build_reply_context(event)
+        is_knowledge_query = self._is_game_knowledge_query(event["text"])
         token_usage = 0
         tool_records: list[ToolCallRecord] = []
         last_command_result: CommandResultPayload | None = None
@@ -63,6 +64,12 @@ class AgentRunner:
                 round_index=round_index,
             )
             token_usage += planning_tokens
+            planning_result = self._apply_knowledge_hard_rule(
+                event=event,
+                planning_result=planning_result,
+                tool_records=tool_records,
+                is_knowledge_query=is_knowledge_query,
+            )
 
             if planning_result.decision == "ignore":
                 if trace_id:
@@ -94,6 +101,13 @@ class AgentRunner:
                     )
                 text = self._normalize_plain_text(planning_result.draft_reply)
                 text = text or self._fallback_text(last_command_result)
+                self._log_knowledge_summary(
+                    event=event,
+                    trace_id=trace_id,
+                    planning_result=planning_result,
+                    tool_records=tool_records,
+                    final_text=text,
+                )
                 await self._record_turn(event, text, trace_id=trace_id)
                 return AgentResponse(
                     text=text[: self._settings.max_reply_chars],
@@ -125,6 +139,13 @@ class AgentRunner:
                 response_type, image_path = self._response_metadata(
                     last_command_result=last_command_result,
                     last_image_result=last_image_result,
+                )
+                self._log_knowledge_summary(
+                    event=event,
+                    trace_id=trace_id,
+                    planning_result=planning_result,
+                    tool_records=tool_records,
+                    final_text=text,
                 )
                 await self._record_turn(event, text, trace_id=trace_id)
                 return AgentResponse(
@@ -177,6 +198,13 @@ class AgentRunner:
         response_type, image_path = self._response_metadata(
             last_command_result=last_command_result,
             last_image_result=last_image_result,
+        )
+        self._log_knowledge_summary(
+            event=event,
+            trace_id=trace_id,
+            planning_result=planning_result,
+            tool_records=tool_records,
+            final_text=text,
         )
         await self._record_turn(event, text, trace_id=trace_id)
         return AgentResponse(
@@ -424,6 +452,199 @@ class AgentRunner:
             draft_reply=str(payload.get("draft_reply", "") or "").strip(),
             tool_calls=tool_calls,
         )
+
+    def _apply_knowledge_hard_rule(
+        self,
+        *,
+        event: EventPayload,
+        planning_result: PlanningResult,
+        tool_records: list[ToolCallRecord],
+        is_knowledge_query: bool,
+    ) -> PlanningResult:
+        if not is_knowledge_query:
+            return planning_result
+
+        search_records = [
+            record for record in tool_records if record.name == "search_game_knowledge"
+        ]
+        read_records = [
+            record for record in tool_records if record.name == "read_game_knowledge_file"
+        ]
+        last_search = search_records[-1].result if search_records else None
+        last_search_data = (last_search or {}).get("data", {}) or {}
+        matched_count = self._extract_int(last_search_data.get("matched_count"), default=0)
+        matched_paths = self._extract_string_list(last_search_data.get("matched_paths"))
+
+        if not search_records:
+            return PlanningResult(
+                decision="call_tools",
+                reason="知识问题必须先检索知识库。",
+                tool_calls=[
+                    PlanningToolCall(
+                        name="search_game_knowledge",
+                        arguments={"query": event["text"]},
+                    )
+                ],
+            )
+
+        if matched_count > 0 and not read_records:
+            return PlanningResult(
+                decision="call_tools",
+                reason="知识库已命中，必须先读取至少一个候选文件。",
+                tool_calls=[
+                    PlanningToolCall(
+                        name="read_game_knowledge_file",
+                        arguments={
+                            "file_path": matched_paths[0],
+                            "query": event["text"],
+                        },
+                    )
+                ],
+            )
+
+        if matched_count <= 0 and planning_result.decision == "reply_direct":
+            return PlanningResult(
+                decision="final",
+                reason="知识库未命中，需走统一未命中兜底。",
+                draft_reply=planning_result.draft_reply,
+                tool_calls=planning_result.tool_calls,
+            )
+
+        return planning_result
+
+    def _is_game_knowledge_query(self, text: str) -> bool:
+        normalized = str(text or "").lower()
+        keywords = (
+            "数据",
+            "机制",
+            "属性",
+            "伤害",
+            "攻速",
+            "价格",
+            "射程",
+            "穿透",
+            "升级",
+            "路线",
+            "ddt",
+            "能不能",
+            "抓",
+            "野兽之主",
+            "人鱼猴",
+            "beast handler",
+            "mermaid monkey",
+        )
+        return any(keyword in normalized for keyword in keywords)
+
+    def _log_knowledge_summary(
+        self,
+        *,
+        event: EventPayload,
+        trace_id: str,
+        planning_result: PlanningResult | None,
+        tool_records: list[ToolCallRecord],
+        final_text: str,
+    ) -> None:
+        summary = self._build_knowledge_summary(
+            event=event,
+            planning_result=planning_result,
+            tool_records=tool_records,
+            final_text=final_text,
+        )
+        if not trace_id or summary is None:
+            return
+        log_flow(stage="agent.knowledge_summary", trace_id=trace_id, **summary)
+
+    def _build_knowledge_summary(
+        self,
+        *,
+        event: EventPayload,
+        planning_result: PlanningResult | None,
+        tool_records: list[ToolCallRecord],
+        final_text: str,
+    ) -> dict[str, object] | None:
+        search_records = [
+            record for record in tool_records if record.name == "search_game_knowledge"
+        ]
+        read_records = [
+            record for record in tool_records if record.name == "read_game_knowledge_file"
+        ]
+        planned_knowledge = bool(
+            planning_result
+            and any(
+                item.name in {"search_game_knowledge", "read_game_knowledge_file"}
+                for item in planning_result.tool_calls
+            )
+        )
+        if not search_records and not read_records and not planned_knowledge:
+            return None
+
+        last_search = search_records[-1].result if search_records else None
+        last_search_data = (last_search or {}).get("data", {}) or {}
+        matched_count = self._extract_int(last_search_data.get("matched_count"), default=0)
+        matched_paths = self._extract_string_list(last_search_data.get("matched_paths"))
+        read_paths: list[str] = []
+        successful_read_paths: list[str] = []
+        total_content_chars = 0
+        for record in read_records:
+            data = record.result.get("data", {}) or {}
+            file_path = str(data.get("file_path", "") or "").strip()
+            if file_path:
+                read_paths.append(file_path)
+                if record.result.get("ok", False):
+                    successful_read_paths.append(file_path)
+            total_content_chars += self._extract_int(
+                data.get("content_chars", data.get("chars")),
+                default=0,
+            )
+
+        answer_grounded = bool(successful_read_paths)
+        fallback_reason = ""
+        if search_records:
+            if not last_search or not last_search.get("ok", False):
+                fallback_reason = "knowledge_search_failed"
+            elif matched_count <= 0:
+                fallback_reason = "knowledge_not_found"
+            elif not read_records:
+                fallback_reason = "search_hit_but_not_read"
+            elif not successful_read_paths:
+                fallback_reason = "knowledge_read_failed"
+        elif read_records and not successful_read_paths:
+            fallback_reason = "knowledge_read_failed"
+
+        return {
+            "event_text": event["text"],
+            "knowledge_query": str(last_search_data.get("knowledge_query", "") or "").strip(),
+            "knowledge_query_raw": str(
+                last_search_data.get("knowledge_query_raw", "") or ""
+            ).strip(),
+            "matched_count": matched_count,
+            "matched_paths": matched_paths,
+            "read_count": len(read_paths),
+            "read_paths": read_paths,
+            "successful_read_count": len(successful_read_paths),
+            "successful_read_paths": successful_read_paths,
+            "answer_grounded": answer_grounded,
+            "fallback_reason": fallback_reason,
+            "final_response_has_text": bool((final_text or "").strip()),
+            "final_response_preview": (final_text or "").strip()[:120],
+            "content_chars": total_content_chars,
+        }
+
+    def _extract_int(self, value: object, *, default: int = 0) -> int:
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return default
+
+    def _extract_string_list(self, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        result: list[str] = []
+        for item in value:
+            text = str(item or "").strip()
+            if text:
+                result.append(text)
+        return result
 
     def _safe_parse_json_object(self, raw: str) -> dict[str, object]:
         text = (raw or "").strip()

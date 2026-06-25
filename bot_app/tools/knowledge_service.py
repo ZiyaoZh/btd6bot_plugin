@@ -49,7 +49,10 @@ def build_search_game_knowledge_result(
             data={
                 "raw_query": raw_query,
                 "query": query,
+                "knowledge_query": query,
+                "knowledge_query_raw": raw_query,
                 "top_n": top_n,
+                "matched_count": 0,
                 "matched_paths": [],
             },
             message=f"游戏知识检索失败: {type(exc).__name__}",
@@ -63,6 +66,8 @@ def build_search_game_knowledge_result(
         data={
             "raw_query": raw_query,
             "query": query,
+            "knowledge_query": query,
+            "knowledge_query_raw": raw_query,
             "top_n": top_n,
             "matched_count": len(matched_paths),
             "matched_paths": matched_paths,
@@ -158,6 +163,7 @@ def build_read_game_knowledge_file_result(
             "max_chars": max_chars,
             "content": content,
             "mode": "full",
+            "content_chars": len(content),
         },
         message="知识库文件读取完成",
         extra_prompt=(
@@ -230,6 +236,7 @@ def _build_long_document_result(
             "chars": int(
                 extract_result.get("chars", len(extracted_text)) or len(extracted_text)
             ),
+            "content_chars": len(extracted_text),
         },
         message="知识库长文已按关键词提取相关文本块",
         extra_prompt=(

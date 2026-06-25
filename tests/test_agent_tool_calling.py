@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT))
@@ -13,12 +14,14 @@ sys.path.insert(0, str(PLUGIN_ROOT))
 from bot_app.agent.runner import AgentRunner  # noqa: E402
 from bot_app.agent.prompt_manager import PromptManager  # noqa: E402
 from bot_app.agent.tool_registry import ToolRegistry  # noqa: E402
+from bot_app.agent.types import ToolCallRecord  # noqa: E402
 from bot_app.context_contracts import (  # noqa: E402
     build_user_session_memory_context,
     serialize_session_summary,
 )
 from bot_app.command_processor import CommandProcessor  # noqa: E402
 from bot_app.context_manager import ContextManager  # noqa: E402
+from bot_app.db_manager import BotDatabase  # noqa: E402
 from bot_app.group_context import (  # noqa: E402
     build_message_record_metadata,
     build_recent_group_window,
@@ -533,13 +536,207 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(search_result["ok"])
         self.assertEqual(search_result["module"], "tool.knowledge")
+        self.assertEqual(search_result["data"]["knowledge_query"], "忍者猴")
+        self.assertEqual(search_result["data"]["knowledge_query_raw"], "忍者猴机制")
         self.assertTrue(read_result["ok"])
         self.assertIn("大师忍者", read_result["data"]["content"])
+        self.assertGreater(read_result["data"]["content_chars"], 0)
         self.assertTrue(long_result["ok"])
         self.assertEqual(long_result["data"]["mode"], "extract")
+        self.assertGreater(long_result["data"]["content_chars"], 0)
         self.assertFalse(rejected_result["ok"])
         self.assertEqual(command_processor.calls, [])
         self.assertNotIn(str(kb_root.resolve()), sys.path)
+
+    def test_build_knowledge_summary_marks_grounded_read(self) -> None:
+        runner = AgentRunner(
+            llm=FakeLLM([]),  # type: ignore[arg-type]
+            memory=GroupChatMemory(history_turns=3),
+            settings=_settings(),
+            tool_registry=ToolRegistry(_runtime(FakeCommandProcessor())),
+            context_manager=FakeContextManager(),  # type: ignore[arg-type]
+        )
+        tool_records = [
+            ToolCallRecord(
+                name="search_game_knowledge",
+                arguments={"query": "人鱼猴数据"},
+                result={
+                    "module": "tool.knowledge",
+                    "ok": True,
+                    "command": "search_game_knowledge",
+                    "data": {
+                        "knowledge_query": "人鱼猴",
+                        "knowledge_query_raw": "人鱼猴数据",
+                        "matched_count": 1,
+                        "matched_paths": ["/kb/人鱼猴.html"],
+                    },
+                    "message": "游戏知识检索完成",
+                    "extra_prompt": "",
+                    "response_type": "text",
+                    "image_path": "",
+                },
+            ),
+            ToolCallRecord(
+                name="read_game_knowledge_file",
+                arguments={"file_path": "/kb/人鱼猴.html"},
+                result={
+                    "module": "tool.knowledge",
+                    "ok": True,
+                    "command": "read_game_knowledge_file",
+                    "data": {
+                        "file_path": "/kb/人鱼猴.html",
+                        "content": "人鱼猴详细数据",
+                        "content_chars": 8,
+                    },
+                    "message": "知识库文件读取完成",
+                    "extra_prompt": "",
+                    "response_type": "text",
+                    "image_path": "",
+                },
+            ),
+        ]
+
+        summary = runner._build_knowledge_summary(  # type: ignore[attr-defined]
+            event=_event("人鱼猴数据"),
+            planning_result=None,
+            tool_records=tool_records,
+            final_text="人鱼猴的数据如下",
+        )
+
+        assert summary is not None
+        self.assertEqual(summary["knowledge_query"], "人鱼猴")
+        self.assertEqual(summary["matched_count"], 1)
+        self.assertEqual(summary["read_count"], 1)
+        self.assertTrue(summary["answer_grounded"])
+        self.assertEqual(summary["fallback_reason"], "")
+        self.assertEqual(summary["content_chars"], 8)
+
+    async def test_runner_logs_knowledge_summary_for_search_hit_without_read(self) -> None:
+        command_processor = FakeCommandProcessor()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin_root = _create_temp_plugin_root(temp_dir)
+            _create_fake_knowledge_base(plugin_root)
+            registry = ToolRegistry(_runtime(command_processor, plugin_root=plugin_root))
+            llm = FakeLLM(
+                [
+                    _planning_response(
+                        "call_tools",
+                        tool_calls=[
+                            {
+                                "name": "search_game_knowledge",
+                                "arguments": {"query": "忍者猴机制"},
+                            }
+                        ],
+                    ),
+                    _planning_response("final", reason="搜索结果已足够"),
+                    _assistant_response("我先给你一个简短结论"),
+                ]
+            )
+            runner = AgentRunner(
+                llm=llm,  # type: ignore[arg-type]
+                memory=GroupChatMemory(history_turns=3),
+                settings=_settings(),
+                tool_registry=registry,
+                context_manager=FakeContextManager(),  # type: ignore[arg-type]
+            )
+            flow_calls: list[dict[str, Any]] = []
+
+            def _capture_flow(*, stage: str, trace_id: str, **fields: Any) -> None:
+                flow_calls.append({"stage": stage, "trace_id": trace_id, **fields})
+
+            with patch("bot_app.agent.runner.log_flow", side_effect=_capture_flow):
+                response = await runner.run(
+                    _event("查一下忍者猴机制"), trace_id="test-trace"
+                )
+
+        self.assertEqual(response.text, "我先给你一个简短结论")
+        summaries = [
+            item for item in flow_calls if item["stage"] == "agent.knowledge_summary"
+        ]
+        self.assertEqual(len(summaries), 1)
+        summary = summaries[0]
+        self.assertEqual(summary["knowledge_query"], "忍者猴")
+        self.assertEqual(summary["matched_count"], 1)
+        self.assertEqual(summary["read_count"], 0)
+        self.assertFalse(summary["answer_grounded"])
+        self.assertEqual(summary["fallback_reason"], "search_hit_but_not_read")
+
+    async def test_agent_forces_search_for_knowledge_query_when_model_returns_invalid_category_tool(self) -> None:
+        command_processor = FakeCommandProcessor()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin_root = _create_temp_plugin_root(temp_dir)
+            _create_fake_knowledge_base(plugin_root)
+            runtime = _runtime(command_processor, plugin_root=plugin_root, db=FakeDb())
+            registry = ToolRegistry(runtime)
+            llm = FakeLLM(
+                [
+                    _planning_response(
+                        "call_tools",
+                        tool_calls=[
+                            {
+                                "name": "game_knowledge",
+                                "arguments": {"query": "野兽之主数据"},
+                            }
+                        ],
+                    ),
+                    _planning_response("final", reason="已拿到检索结果"),
+                    _assistant_response("知识库里暂时没找到"),
+                ]
+            )
+            runner = AgentRunner(
+                llm=llm,  # type: ignore[arg-type]
+                memory=GroupChatMemory(history_turns=3),
+                settings=_settings(),
+                tool_registry=registry,
+                tool_runtime=runtime,
+                context_manager=FakeContextManager(),  # type: ignore[arg-type]
+            )
+
+            response = await runner.run(_event("野兽之主数据"), trace_id="test-trace")
+
+        self.assertEqual(response.text, "知识库文件读取完成")
+        self.assertEqual(len(response.tool_calls), 2)
+        self.assertEqual(response.tool_calls[0].name, "search_game_knowledge")
+        self.assertEqual(response.tool_calls[1].name, "read_game_knowledge_file")
+
+    async def test_agent_forces_read_after_search_hit_for_knowledge_query(self) -> None:
+        command_processor = FakeCommandProcessor()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin_root = _create_temp_plugin_root(temp_dir)
+            _create_fake_knowledge_base(plugin_root)
+            runtime = _runtime(command_processor, plugin_root=plugin_root, db=FakeDb())
+            registry = ToolRegistry(runtime)
+            llm = FakeLLM(
+                [
+                    _planning_response(
+                        "call_tools",
+                        tool_calls=[
+                            {
+                                "name": "search_game_knowledge",
+                                "arguments": {"query": "人鱼猴数据"},
+                            }
+                        ],
+                    ),
+                    _planning_response("final", reason="搜到候选页了"),
+                    _planning_response("final", reason="读完文件可以回答"),
+                    _assistant_response("人鱼猴的数据如下"),
+                ]
+            )
+            runner = AgentRunner(
+                llm=llm,  # type: ignore[arg-type]
+                memory=GroupChatMemory(history_turns=3),
+                settings=_settings(),
+                tool_registry=registry,
+                tool_runtime=runtime,
+                context_manager=FakeContextManager(),  # type: ignore[arg-type]
+            )
+
+            response = await runner.run(_event("人鱼猴数据"), trace_id="test-trace")
+
+        self.assertEqual(response.text, "人鱼猴的数据如下")
+        self.assertEqual(len(response.tool_calls), 2)
+        self.assertEqual(response.tool_calls[0].name, "search_game_knowledge")
+        self.assertEqual(response.tool_calls[1].name, "read_game_knowledge_file")
 
     async def test_legacy_command_processor_list_features_uses_shared_catalog(
         self,
@@ -1144,6 +1341,67 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         )
+
+    def test_bot_database_migrates_legacy_messages_table_before_creating_indexes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "legacy.db"
+            conn = __import__("sqlite3").connect(db_path)
+            cur = conn.cursor()
+            cur.executescript(
+                """
+                CREATE TABLE users (
+                    user_id TEXT PRIMARY KEY,
+                    nickname TEXT DEFAULT '',
+                    card TEXT DEFAULT '',
+                    role TEXT DEFAULT '',
+                    title TEXT DEFAULT '',
+                    level TEXT DEFAULT '',
+                    total_messages INTEGER NOT NULL DEFAULT 0,
+                    last_message_at TEXT DEFAULT ''
+                );
+
+                CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id TEXT,
+                    group_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    raw_message TEXT NOT NULL DEFAULT '',
+                    sender_nickname TEXT DEFAULT '',
+                    sender_card TEXT DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    extra_json TEXT NOT NULL DEFAULT '{}',
+                    UNIQUE(message_id, group_id)
+                );
+
+                CREATE TABLE daily_user_stats (
+                    day TEXT NOT NULL,
+                    group_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(day, group_id, user_id)
+                );
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            db = BotDatabase(str(db_path))
+            db._conn.close()
+
+            conn = __import__("sqlite3").connect(db_path)
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(messages)")
+            columns = {row[1] for row in cur.fetchall()}
+            self.assertIn("normalized_text", columns)
+            self.assertIn("mention_relation", columns)
+            self.assertIn("is_text_meaningful", columns)
+            self.assertIn("message_type", columns)
+
+            cur.execute("PRAGMA index_list(messages)")
+            index_names = {row[1] for row in cur.fetchall()}
+            self.assertIn("idx_messages_group_created", index_names)
+            self.assertIn("idx_messages_group_meaningful_created", index_names)
+            conn.close()
 
     def test_build_message_record_metadata_marks_meaningful_text_and_mentions(self) -> None:
         metadata = build_message_record_metadata(
