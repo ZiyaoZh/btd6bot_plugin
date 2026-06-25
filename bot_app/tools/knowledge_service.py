@@ -145,6 +145,78 @@ def build_read_game_knowledge_file_result(
         )
 
     content = extract_readable_content(text)
+    metadata = build_kb_content_metadata(
+        content,
+        file_path=safe_path,
+        keywords_query=keywords_query,
+    )
+    if keywords_query:
+        paragraph_content = extract_indexed_paragraphs(
+            kb_root=kb_root,
+            safe_path=safe_path,
+            keywords_query=keywords_query,
+            max_chars=max_chars,
+        )
+        if paragraph_content:
+            paragraph_text = str(paragraph_content.get("text", "") or "").strip()
+            if paragraph_text:
+                paragraph_metadata = build_kb_content_metadata(
+                    paragraph_text,
+                    file_path=safe_path,
+                    keywords_query=keywords_query,
+                )
+                paragraph_metadata["paragraph_count"] = len(
+                    paragraph_content.get("paragraphs", []) or []
+                )
+                return ok_result(
+                    module=module,
+                    command="read_game_knowledge_file",
+                    data={
+                        "file_path": str(safe_path),
+                        "max_chars": max_chars,
+                        "content": paragraph_text,
+                        "mode": "paragraph_extract",
+                        "keywords": split_keywords_for_view(
+                            sanitize_kb_query(keywords_query)
+                        ),
+                        "paragraphs": paragraph_content.get("paragraphs", []),
+                        "metadata": paragraph_metadata,
+                        "content_chars": len(paragraph_text),
+                    },
+                    message="知识库文件已按段落索引提取相关片段",
+                    extra_prompt=(
+                        "这是从知识库段落索引中按用户问题提取的相关片段。"
+                        "请优先依据 content 回答；若片段没有覆盖问题，不要编造。"
+                    ),
+                )
+
+        extracted_content = extract_keyword_windows(
+            content,
+            keywords_query=keywords_query,
+            max_chars=max_chars,
+        )
+        if extracted_content:
+            return ok_result(
+                module=module,
+                command="read_game_knowledge_file",
+                data={
+                    "file_path": str(safe_path),
+                    "max_chars": max_chars,
+                    "content": extracted_content,
+                    "mode": "keyword_extract",
+                    "keywords": split_keywords_for_view(
+                        sanitize_kb_query(keywords_query)
+                    ),
+                    "metadata": metadata,
+                    "content_chars": len(extracted_content),
+                },
+                message="知识库文件已按关键词提取相关片段",
+                extra_prompt=(
+                    "这是从知识库文件中按用户问题提取的相关片段。"
+                    "请优先依据 content 回答；若片段没有覆盖问题，不要编造。"
+                ),
+            )
+
     if len(content) > 8000:
         return _build_long_document_result(
             kb_root=kb_root,
@@ -163,6 +235,7 @@ def build_read_game_knowledge_file_result(
             "max_chars": max_chars,
             "content": content,
             "mode": "full",
+            "metadata": metadata,
             "content_chars": len(content),
         },
         message="知识库文件读取完成",
@@ -222,6 +295,11 @@ def _build_long_document_result(
         )
 
     extracted_text = str(extract_result.get("text", "") or "").strip()
+    metadata = build_kb_content_metadata(
+        extracted_text,
+        file_path=safe_path,
+        keywords_query=keywords_query,
+    )
     return ok_result(
         module=module,
         command="read_game_knowledge_file",
@@ -233,6 +311,7 @@ def _build_long_document_result(
             "keywords": extract_result.get(
                 "keywords", split_keywords_for_view(keywords_query)
             ),
+            "metadata": metadata,
             "chars": int(
                 extract_result.get("chars", len(extracted_text)) or len(extracted_text)
             ),
@@ -247,6 +326,33 @@ def _build_long_document_result(
     )
 
 
+def extract_indexed_paragraphs(
+    *,
+    kb_root: Path,
+    safe_path: Path,
+    keywords_query: str,
+    max_chars: int,
+) -> dict[str, Any]:
+    corpus_dir = kb_root / "wiki_data_second_cleaned" / "btd6"
+    db_path = kb_root / "search_index.db"
+    alias_file_path = kb_root / "aliases.json"
+    alias_file = alias_file_path if alias_file_path.exists() else None
+    paragraph_query = normalize_btd6_search_terms(strip_kb_query_invocation_noise(keywords_query))
+    try:
+        kb_interface = _load_kb_interface(kb_root)
+        result = kb_interface.interface_extract_paragraphs(
+            file_name=str(safe_path),
+            keywords_query=paragraph_query or keywords_query,
+            db_path=db_path,
+            corpus_dir=corpus_dir,
+            alias_file=alias_file,
+            max_chars=max_chars,
+        )
+    except Exception:
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
 def build_extract_keywords_query(arguments: dict[str, Any]) -> str:
     for key in ("keywords", "query", "keyword"):
         value = arguments.get(key, "")
@@ -259,9 +365,183 @@ def build_extract_keywords_query(arguments: dict[str, Any]) -> str:
     return ""
 
 
+def build_kb_content_metadata(
+    content: str,
+    *,
+    file_path: Path,
+    keywords_query: str,
+) -> dict[str, Any]:
+    title = file_path.stem
+    metadata = {
+        "title": title,
+        "path": str(file_path),
+        "tower_or_hero": title,
+        "upgrade_path": "",
+        "upgrade_tier": "",
+        "tags": infer_kb_tags(content, title=title, query=keywords_query),
+        "mechanics": infer_kb_mechanics(content, query=keywords_query),
+        "detected_fields": infer_kb_detected_fields(content),
+    }
+    upgrade_code = infer_upgrade_code(keywords_query)
+    if upgrade_code:
+        metadata["upgrade_tier"] = upgrade_code
+        metadata["upgrade_path"] = infer_upgrade_path(upgrade_code)
+    return metadata
+
+
+def infer_kb_tags(content: str, *, title: str, query: str) -> list[str]:
+    haystack = f"{title} {query} {content[:1200]}".lower()
+    tags: list[str] = []
+    tag_terms = {
+        "tower": ("防御塔", "猴", "炮", "工厂", "农场"),
+        "hero": ("英雄", "昆西", "本杰明", "杰拉尔多", "科沃斯"),
+        "upgrade": ("升级价格", "解锁经验", "0-0-", "路线"),
+        "data": ("价格", "伤害", "穿透", "攻速", "射程"),
+        "mechanic": ("ddt", "moab", "迷彩", "铅", "紫气球", "收益", "加成"),
+    }
+    for tag, terms in tag_terms.items():
+        if any(term.lower() in haystack for term in terms):
+            tags.append(tag)
+    return tags
+
+
+def infer_kb_mechanics(content: str, *, query: str) -> list[str]:
+    haystack = f"{query} {content}".lower()
+    mechanics: list[str] = []
+    mechanic_terms = {
+        "DDT": ("ddt",),
+        "MOAB": ("moab", "zomg", "bfb", "bad", "大型气球"),
+        "camo": ("迷彩", "反迷彩", "侦测"),
+        "lead": ("铅", "破铅"),
+        "purple": ("紫气球", "紫"),
+        "income": ("收益", "现金", "金钱", "香蕉", "加成"),
+        "range": ("射程", "范围"),
+    }
+    for mechanic, terms in mechanic_terms.items():
+        if any(term.lower() in haystack for term in terms):
+            mechanics.append(mechanic)
+    return mechanics
+
+
+def infer_kb_detected_fields(content: str) -> list[str]:
+    fields: list[str] = []
+    for field in ("价格", "伤害", "穿透", "攻速", "射程", "升级价格", "解锁经验"):
+        if field in content:
+            fields.append(field)
+    return fields
+
+
+def infer_upgrade_code(query: str) -> str:
+    match = re.search(r"(?<![\d-])([0-5])-([0-5])-([0-5])(?![\d-])", query or "")
+    if match:
+        return "".join(match.groups())
+    match = re.search(r"(?<![\d-])([0-5]{3})(?![\d-])", query or "")
+    return match.group(1) if match else ""
+
+
+def infer_upgrade_path(upgrade_code: str) -> str:
+    if len(upgrade_code) != 3:
+        return ""
+    tiers = [int(ch) for ch in upgrade_code]
+    if not any(tiers):
+        return ""
+    path_index = max(range(3), key=lambda index: tiers[index])
+    return ("top", "middle", "bottom")[path_index]
+
+
 def split_keywords_for_view(keywords_query: str) -> list[str]:
     parts = re.split(r"[\s,，、;；|+/]+", keywords_query or "")
     return [part.strip() for part in parts if part.strip()]
+
+
+def extract_keyword_windows(
+    content: str,
+    *,
+    keywords_query: str,
+    max_chars: int,
+) -> str:
+    keywords = split_keywords_for_view(sanitize_kb_query(keywords_query))
+    if not content or not keywords:
+        return ""
+
+    lowered_content = content.lower()
+    windows: list[tuple[int, int, int, int]] = []
+    window_size = max(200, min(max_chars, 2000))
+    half_window = max(100, window_size // 2)
+    for keyword in keywords:
+        lowered_keyword = keyword.lower()
+        if not lowered_keyword:
+            continue
+        start = 0
+        while True:
+            hit = lowered_content.find(lowered_keyword, start)
+            if hit < 0:
+                break
+            window_start = max(0, hit - half_window)
+            window_end = min(len(content), hit + len(keyword) + half_window)
+            score = _keyword_window_score(
+                content[window_start:window_end],
+                keywords,
+            )
+            windows.append((score, _keyword_weight(lowered_keyword), window_start, window_end))
+            start = hit + len(lowered_keyword)
+
+    if not windows:
+        return ""
+
+    windows.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    selected: list[tuple[int, int]] = []
+    current_chars = 0
+    for _, _, start, end in windows:
+        if any(not (end < used_start or start > used_end) for used_start, used_end in selected):
+            continue
+        clipped = content[start:end].strip()
+        if not clipped:
+            continue
+        sep_len = 2 if selected else 0
+        if current_chars + sep_len + len(clipped) > max_chars:
+            remaining = max_chars - current_chars - sep_len
+            if remaining < 200:
+                continue
+            end = min(end, start + remaining)
+            clipped = content[start:end].strip()
+        selected.append((start, end))
+        current_chars += sep_len + len(clipped)
+        if current_chars >= max_chars:
+            break
+
+    selected.sort()
+    parts: list[str] = []
+    for start, end in selected:
+        part = content[start:end].strip()
+        if start > 0:
+            part = "..." + part
+        if end < len(content):
+            part = part + "..."
+        parts.append(part)
+    return "\n\n".join(parts).strip()[:max_chars]
+
+
+def _keyword_window_score(text: str, keywords: list[str]) -> int:
+    lowered = text.lower()
+    score = 0
+    for keyword in keywords:
+        key = keyword.lower()
+        if key and key in lowered:
+            score += _keyword_weight(key)
+    return score
+
+
+def _keyword_weight(keyword: str) -> int:
+    if re.fullmatch(r"[0-5]{3}|\d-\d-\d", keyword):
+        return 1
+    if keyword in {"野兽之主", "人鱼猴", "beast handler", "mermaid monkey"}:
+        return 3
+    if keyword in {"ddt", "moab", "bad", "zomg", "bfb"}:
+        return 10
+    if keyword in {"上路", "中路", "下路"}:
+        return 10
+    return 15
 
 
 def resolve_safe_kb_path(raw_path: str, *, kb_root: Path) -> Path | None:
@@ -300,7 +580,10 @@ def extract_readable_content(text: str) -> str:
 
 
 def sanitize_kb_query(query: str) -> str:
+    cleaned = strip_kb_query_invocation_noise(query)
+    cleaned = normalize_btd6_search_terms(cleaned)
     weak_terms = (
+        "数据",
         "详情",
         "详细",
         "说明",
@@ -320,13 +603,222 @@ def sanitize_kb_query(query: str) -> str:
         "如何",
         "有关",
         "相关",
+        "价格",
+        "伤害",
+        "穿透",
+        "攻速",
+        "射程",
+        "收益",
+        "加成",
+        "技能",
+        "商店",
+        "灵魂",
+        "陷阱",
+        "支援",
+        "亡灵",
+        "太阳神庙",
+        "永久啤酒",
+        "反迷彩",
+        "破铅",
+        "上路",
+        "中路",
+        "下路",
     )
-    cleaned = query
+    weak_english_terms = (
+        "stats",
+        "stat",
+        "data",
+        "detail",
+        "details",
+        "info",
+        "information",
+        "guide",
+        "wiki",
+        "about",
+    )
     for term in weak_terms:
         cleaned = cleaned.replace(term, " ")
+    for term in weak_english_terms:
+        cleaned = re.sub(rf"\b{re.escape(term)}\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"[，。,.!?！？；;:/\\|]+", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned or query.strip()
+
+
+def strip_kb_query_invocation_noise(query: str) -> str:
+    cleaned = str(query or "").strip()
+    cleaned = re.sub(r"\[CQ:at,qq=\d+\]", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"@\S+", " ", cleaned)
+    cleaned = re.sub(
+        r"^\s*(小污猫|污猫|机器人|bot|Bot)\s*[,，:：]?\s*",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    invocation_terms = (
+        "帮我",
+        "麻烦",
+        "查一下",
+        "查下",
+        "查查",
+        "搜一下",
+        "搜下",
+        "搜索",
+        "检索",
+        "请问",
+        "请",
+    )
+    for term in invocation_terms:
+        cleaned = cleaned.replace(term, " ")
+    cleaned = re.sub(r"\b(bot|search)\b", " ", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def normalize_btd6_search_terms(query: str) -> str:
+    cleaned = str(query or "")
+
+    phrase_aliases = {
+        "beast handler": "野兽之主",
+        "mermaid monkey": "人鱼猴",
+        "m.a.d": "M.A.D",
+    }
+    for alias, normalized in phrase_aliases.items():
+        cleaned = re.sub(
+            rf"\b{re.escape(alias)}\b",
+            f" {normalized} ",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+
+    route_aliases = {
+        "路线1": "上路",
+        "路线一": "上路",
+        "一路线": "上路",
+        "1路": "上路",
+        "路线2": "中路",
+        "路线二": "中路",
+        "二路线": "中路",
+        "2路": "中路",
+        "路线3": "下路",
+        "路线三": "下路",
+        "三路线": "下路",
+        "3路": "下路",
+    }
+    for alias, normalized in route_aliases.items():
+        cleaned = cleaned.replace(alias, f" {normalized} ")
+
+    entity_aliases = (
+        "飞镖猴",
+        "回旋镖猴",
+        "大炮",
+        "图钉炮",
+        "冰猴",
+        "胶水炮手",
+        "狙击手猴",
+        "猴子潜艇",
+        "海盗猴",
+        "飞机",
+        "直升机",
+        "迫击炮猴",
+        "机枪猴",
+        "法师猴",
+        "超猴侠",
+        "忍者猴",
+        "炼金术士",
+        "德鲁伊",
+        "香蕉农场",
+        "刺钉工厂",
+        "猴子村",
+        "工程师猴",
+        "昆西",
+        "格温多琳",
+        "奥本",
+        "本杰明",
+        "艾泽里",
+        "帕特",
+        "布里克尔",
+        "艾蒂安",
+        "萨乌达",
+        "杰拉尔多",
+        "科沃斯",
+        "罗莎莉娅",
+        "西拉斯",
+        "野兽之主",
+        "人鱼猴",
+        "逆戟鲸",
+        "大白鲨",
+        "巨齿鲨",
+        "食人鱼",
+        "梭子鱼",
+        "巨型秃鹫",
+        "哈斯特巨鹰",
+        "霸王龙",
+        "M.A.D",
+        "气球终结者",
+    )
+    route_terms = ("上路", "中路", "下路")
+    for entity in entity_aliases:
+        for route in route_terms:
+            cleaned = cleaned.replace(f"{entity}{route}", f"{entity} {route}")
+            cleaned = cleaned.replace(f"{route}{entity}", f"{route} {entity}")
+        for field in BTD6_FIELD_TERMS:
+            cleaned = cleaned.replace(f"{entity}{field}", f"{entity} {field}")
+            cleaned = cleaned.replace(f"{field}{entity}", f"{field} {entity}")
+
+    simple_aliases = {
+        "帕特": "帕特•法斯第",
+        "布里克尔": "海军上将布里克尔",
+        "超猴侠": "超猴侠",
+        "下路野兽": "野兽之主 下路",
+    }
+    for alias, normalized in simple_aliases.items():
+        cleaned = cleaned.replace(alias, f" {normalized} ")
+
+    cleaned = re.sub(r"(?<=[\u4e00-\u9fff])([0-5]{3})(?![\d-])", r" \1", cleaned)
+    cleaned = re.sub(r"(?<![\d-])([0-5]{3})(?=[\u4e00-\u9fff])", r"\1 ", cleaned)
+    cleaned = re.sub(r"(?<![\d-])([0-5]{3})(?![\d-])", _expand_upgrade_code, cleaned)
+    if "野兽之主" in cleaned and re.search(
+        r"(?<![\d-])(?:004|0-0-4)(?![\d-])", cleaned
+    ):
+        cleaned = f"{cleaned} 逆戟鲸"
+    cleaned = re.sub(
+        r"(能不能|能否|可不可以|是否|可以|不能|能抓|能打|能破|能攻击|抓|打得动|打不动|打)",
+        " ",
+        cleaned,
+    )
+
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _expand_upgrade_code(match: re.Match[str]) -> str:
+    code = match.group(1)
+    return f" {code} {code[0]}-{code[1]}-{code[2]} "
+
+
+BTD6_FIELD_TERMS = (
+    "详细数据",
+    "升级价格",
+    "解锁经验",
+    "太阳神庙",
+    "永久啤酒",
+    "反迷彩",
+    "数据",
+    "价格",
+    "伤害",
+    "穿透",
+    "攻速",
+    "射程",
+    "收益",
+    "加成",
+    "技能",
+    "商店",
+    "灵魂",
+    "陷阱",
+    "支援",
+    "亡灵",
+    "机制",
+    "破铅",
+)
 
 
 def _load_kb_interface(kb_root: Path) -> ModuleType:

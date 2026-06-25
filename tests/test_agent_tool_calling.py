@@ -27,11 +27,16 @@ from bot_app.group_context import (  # noqa: E402
     build_recent_group_window,
 )
 from bot_app.llm_client import LLMClient, LLMResponse, LLMToolCall  # noqa: E402
+from bot_app.llm_processor import (  # noqa: E402
+    LLMMessageProcessor,
+    LegacyLLMPipelineDisabled,
+)
 from bot_app.memory import GroupChatMemory  # noqa: E402
 from bot_app.protocol import CommandResultPayload, EventPayload, IntentPayload  # noqa: E402
 from bot_app.sender import MessageSender  # noqa: E402
 from bot_app.settings import AppSettings  # noqa: E402
 from bot_app.tools import ToolRuntime  # noqa: E402
+from bot_app.tools.knowledge_service import sanitize_kb_query  # noqa: E402
 from bot_app.tools.features import get_feature_catalog  # noqa: E402
 from bot_app.tools.social_service import build_summarize_recent_messages_result  # noqa: E402
 from bot_app.tools.subprocess_runner import ProcessResult  # noqa: E402
@@ -267,12 +272,18 @@ def _create_fake_knowledge_base(plugin_root: Path) -> Path:
     (corpus_dir / "monkey.md").write_text(
         "忍者猴可以升级为大师忍者。", encoding="utf-8"
     )
+    (corpus_dir / "beast.md").write_text(
+        "野兽之主 Beast Handler 下路 0-0-4 数据。", encoding="utf-8"
+    )
     (corpus_dir / "long.md").write_text("忍者猴\n" * 9000, encoding="utf-8")
     (kb_root / "kb_interface.py").write_text(
         "\n".join(
             [
                 "from pathlib import Path",
                 "def interface_search(query, top_n, db_path, corpus_dir, alias_file):",
+                "    Path(corpus_dir, 'last_query.txt').write_text(query, encoding='utf-8')",
+                "    if '野兽之主' in query or 'Beast Handler' in query:",
+                "        return [str(Path(corpus_dir) / 'beast.md')][:top_n]",
                 "    return [str(Path(corpus_dir) / 'monkey.md')][:top_n]",
                 "def interface_extract(file_name, keywords_query, corpus_dir, max_chars):",
                 "    return {",
@@ -282,6 +293,26 @@ def _create_fake_knowledge_base(plugin_root: Path) -> Path:
                 "        'keywords': keywords_query.split(),",
                 "        'chars': 9,",
                 "    }",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return kb_root
+
+
+def _create_empty_fake_knowledge_base(plugin_root: Path) -> Path:
+    kb_root = plugin_root / "btd6_knowledge_base"
+    corpus_dir = kb_root / "wiki_data_second_cleaned" / "btd6"
+    corpus_dir.mkdir(parents=True)
+    (kb_root / "wiki_data_cleaned" / "btd6").mkdir(parents=True)
+    (kb_root / "search_index.db").write_text("", encoding="utf-8")
+    (kb_root / "kb_interface.py").write_text(
+        "\n".join(
+            [
+                "def interface_search(query, top_n, db_path, corpus_dir, alias_file):",
+                "    return []",
+                "def interface_extract(file_name, keywords_query, corpus_dir, max_chars):",
+                "    return {'file': file_name, 'max_chars': max_chars, 'text': '', 'keywords': [], 'chars': 0}",
             ]
         ),
         encoding="utf-8",
@@ -335,6 +366,50 @@ def _planning_response(
 
 
 class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
+    def test_sanitize_kb_query_strips_invocation_noise_and_rewrites_domain_terms(
+        self,
+    ) -> None:
+        self.assertEqual(
+            sanitize_kb_query("@小污猫 野兽之主数据"),
+            "野兽之主",
+        )
+        self.assertEqual(
+            sanitize_kb_query("[CQ:at,qq=1693903050] 004野兽之主能不能抓DDT"),
+            "004 0-0-4 野兽之主 DDT",
+        )
+        self.assertIn("下路", sanitize_kb_query("野兽之主路线3详细数据"))
+        self.assertEqual(
+            sanitize_kb_query("野兽之主下路详细数据"),
+            "野兽之主 下路",
+        )
+        self.assertEqual(
+            sanitize_kb_query("Mermaid Monkey stats"),
+            "人鱼猴",
+        )
+        self.assertEqual(
+            sanitize_kb_query("Beast Handler 004 DDT"),
+            "野兽之主 004 0-0-4 DDT",
+        )
+        self.assertIn("能量", sanitize_kb_query("能量图腾数据"))
+
+    def test_extract_keyword_windows_prioritizes_relevant_snippets(self) -> None:
+        from bot_app.tools.knowledge_service import extract_keyword_windows
+
+        content = (
+            "基础资料 野兽之主 价格 250。"
+            + "图标 000 001 002 003 004 0-0-4 " * 20
+            + "逆戟鲸 升级价格 12500，可抓住所有大型气球并拖入海底深渊。"
+        )
+
+        snippet = extract_keyword_windows(
+            content,
+            keywords_query="004野兽之主能不能抓DDT",
+            max_chars=300,
+        )
+
+        self.assertIn("逆戟鲸", snippet)
+        self.assertLessEqual(len(snippet), 300)
+
     def test_tool_registry_loads_concrete_tool_modules(self) -> None:
         command_processor = FakeCommandProcessor()
         registry = ToolRegistry(_runtime(command_processor))
@@ -513,6 +588,14 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                 {"query": "忍者猴机制", "top_n": 3},
                 _event("查忍者猴机制"),
             )
+            noisy_search_result = await registry.execute(
+                "search_game_knowledge",
+                {"query": "@小污猫 野兽之主数据", "top_n": 3},
+                _event("@小污猫 野兽之主数据"),
+            )
+            cleaned_query = (
+                kb_root / "wiki_data_second_cleaned" / "btd6" / "last_query.txt"
+            ).read_text(encoding="utf-8")
             file_path = search_result["data"]["matched_paths"][0]
             read_result = await registry.execute(
                 "read_game_knowledge_file",
@@ -538,6 +621,13 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(search_result["module"], "tool.knowledge")
         self.assertEqual(search_result["data"]["knowledge_query"], "忍者猴")
         self.assertEqual(search_result["data"]["knowledge_query_raw"], "忍者猴机制")
+        self.assertTrue(noisy_search_result["ok"])
+        self.assertEqual(
+            noisy_search_result["data"]["knowledge_query"],
+            "野兽之主",
+        )
+        self.assertEqual(noisy_search_result["data"]["matched_count"], 1)
+        self.assertNotIn("@小污猫", cleaned_query)
         self.assertTrue(read_result["ok"])
         self.assertIn("大师忍者", read_result["data"]["content"])
         self.assertGreater(read_result["data"]["content_chars"], 0)
@@ -611,7 +701,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["fallback_reason"], "")
         self.assertEqual(summary["content_chars"], 8)
 
-    async def test_runner_logs_knowledge_summary_for_search_hit_without_read(self) -> None:
+    async def test_runner_logs_knowledge_summary_after_forced_read(self) -> None:
         command_processor = FakeCommandProcessor()
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin_root = _create_temp_plugin_root(temp_dir)
@@ -629,7 +719,8 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                         ],
                     ),
                     _planning_response("final", reason="搜索结果已足够"),
-                    _assistant_response("我先给你一个简短结论"),
+                    _planning_response("final", reason="读取结果已足够"),
+                    _assistant_response("忍者猴可以升级为大师忍者"),
                 ]
             )
             runner = AgentRunner(
@@ -649,7 +740,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                     _event("查一下忍者猴机制"), trace_id="test-trace"
                 )
 
-        self.assertEqual(response.text, "我先给你一个简短结论")
+        self.assertEqual(response.text, "忍者猴可以升级为大师忍者")
         summaries = [
             item for item in flow_calls if item["stage"] == "agent.knowledge_summary"
         ]
@@ -657,9 +748,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         summary = summaries[0]
         self.assertEqual(summary["knowledge_query"], "忍者猴")
         self.assertEqual(summary["matched_count"], 1)
-        self.assertEqual(summary["read_count"], 0)
-        self.assertFalse(summary["answer_grounded"])
-        self.assertEqual(summary["fallback_reason"], "search_hit_but_not_read")
+        self.assertEqual(summary["read_count"], 1)
+        self.assertTrue(summary["answer_grounded"])
+        self.assertEqual(summary["fallback_reason"], "")
 
     async def test_agent_forces_search_for_knowledge_query_when_model_returns_invalid_category_tool(self) -> None:
         command_processor = FakeCommandProcessor()
@@ -680,7 +771,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                         ],
                     ),
                     _planning_response("final", reason="已拿到检索结果"),
-                    _assistant_response("知识库里暂时没找到"),
+                    _assistant_response("野兽之主的资料已基于知识库读取。"),
                 ]
             )
             runner = AgentRunner(
@@ -694,7 +785,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
 
             response = await runner.run(_event("野兽之主数据"), trace_id="test-trace")
 
-        self.assertEqual(response.text, "知识库文件读取完成")
+        self.assertEqual(response.text, "野兽之主的资料已基于知识库读取。")
         self.assertEqual(len(response.tool_calls), 2)
         self.assertEqual(response.tool_calls[0].name, "search_game_knowledge")
         self.assertEqual(response.tool_calls[1].name, "read_game_knowledge_file")
@@ -737,6 +828,91 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(response.tool_calls), 2)
         self.assertEqual(response.tool_calls[0].name, "search_game_knowledge")
         self.assertEqual(response.tool_calls[1].name, "read_game_knowledge_file")
+
+    async def test_agent_uses_deterministic_fallback_after_knowledge_miss(self) -> None:
+        command_processor = FakeCommandProcessor()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin_root = _create_temp_plugin_root(temp_dir)
+            _create_empty_fake_knowledge_base(plugin_root)
+            runtime = _runtime(command_processor, plugin_root=plugin_root, db=FakeDb())
+            registry = ToolRegistry(runtime)
+            llm = FakeLLM(
+                [
+                    _planning_response(
+                        "call_tools",
+                        tool_calls=[
+                            {
+                                "name": "search_game_knowledge",
+                                "arguments": {"query": "不存在塔数据"},
+                            }
+                        ],
+                    ),
+                    _planning_response("final", reason="知识库未命中"),
+                ]
+            )
+            runner = AgentRunner(
+                llm=llm,  # type: ignore[arg-type]
+                memory=GroupChatMemory(history_turns=3),
+                settings=_settings(),
+                tool_registry=registry,
+                tool_runtime=runtime,
+                context_manager=FakeContextManager(),  # type: ignore[arg-type]
+            )
+
+            response = await runner.run(_event("不存在塔数据"), trace_id="test-trace")
+
+        self.assertIn("知识库里暂时没有检索到", response.text)
+        self.assertIn("不能基于知识库证据确认结论", response.text)
+        self.assertEqual(len(response.tool_calls), 1)
+        self.assertEqual(
+            [request["purpose"] for request in llm.requests],
+            ["agent_planning", "agent_planning"],
+        )
+
+    async def test_agent_uses_deterministic_fallback_after_knowledge_read_failure(
+        self,
+    ) -> None:
+        command_processor = FakeCommandProcessor()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin_root = _create_temp_plugin_root(temp_dir)
+            _create_fake_knowledge_base(plugin_root)
+            runtime = _runtime(command_processor, plugin_root=plugin_root, db=FakeDb())
+            registry = ToolRegistry(runtime)
+            llm = FakeLLM(
+                [
+                    _planning_response(
+                        "call_tools",
+                        tool_calls=[
+                            {
+                                "name": "search_game_knowledge",
+                                "arguments": {"query": "人鱼猴数据"},
+                            },
+                            {
+                                "name": "read_game_knowledge_file",
+                                "arguments": {"file_path": "/outside.md"},
+                            },
+                        ],
+                    ),
+                    _planning_response("final", reason="读取失败但尝试回答"),
+                ]
+            )
+            runner = AgentRunner(
+                llm=llm,  # type: ignore[arg-type]
+                memory=GroupChatMemory(history_turns=3),
+                settings=_settings(),
+                tool_registry=registry,
+                tool_runtime=runtime,
+                context_manager=FakeContextManager(),  # type: ignore[arg-type]
+            )
+
+            response = await runner.run(_event("人鱼猴数据"), trace_id="test-trace")
+
+        self.assertIn("没有成功读取到可用内容", response.text)
+        self.assertEqual(len(response.tool_calls), 2)
+        self.assertEqual(
+            [request["purpose"] for request in llm.requests],
+            ["agent_planning", "agent_planning"],
+        )
 
     async def test_legacy_command_processor_list_features_uses_shared_catalog(
         self,
@@ -927,6 +1103,50 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         )
+
+    async def test_legacy_llm_processor_run_delegates_to_agent_runner(self) -> None:
+        command_processor = FakeCommandProcessor()
+        registry = ToolRegistry(_runtime(command_processor))
+        llm = FakeLLM(
+            [
+                _planning_response(
+                    "call_tools",
+                    tool_calls=[{"name": "list_features", "arguments": {}}],
+                ),
+                _planning_response("final", reason="工具结果已足够"),
+                _assistant_response("功能已列出"),
+            ]
+        )
+        processor = LLMMessageProcessor(
+            llm=llm,  # type: ignore[arg-type]
+            memory=GroupChatMemory(history_turns=3),
+            settings=_settings(),
+            context_manager=FakeContextManager(),  # type: ignore[arg-type]
+            tool_registry=registry,
+            tool_runtime=_runtime(command_processor, db=FakeDb()),
+        )
+
+        response = await processor.run(_event(), trace_id="legacy-trace")
+
+        self.assertTrue(response.should_send)
+        self.assertEqual(response.text, "功能已列出")
+        self.assertEqual(command_processor.calls, [])
+        self.assertEqual(
+            [request["purpose"] for request in llm.requests],
+            ["agent_planning", "agent_planning", "agent_rendering"],
+        )
+
+    async def test_legacy_llm_processor_step_methods_are_disabled(self) -> None:
+        processor = LLMMessageProcessor(
+            llm=FakeLLM([]),  # type: ignore[arg-type]
+            memory=GroupChatMemory(history_turns=3),
+            settings=_settings(),
+        )
+
+        with self.assertRaises(LegacyLLMPipelineDisabled):
+            await processor.plan_intent(_event(), trace_id="legacy-trace")
+
+        self.assertEqual(processor._llm.requests, [])  # type: ignore[attr-defined]
 
     async def test_ignore_message_tool_suppresses_send(self) -> None:
         command_processor = FakeCommandProcessor()

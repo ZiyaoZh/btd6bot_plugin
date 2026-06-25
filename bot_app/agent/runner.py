@@ -127,6 +127,31 @@ class AgentRunner:
                         decision=planning_result.decision,
                         reason=planning_result.reason,
                     )
+                knowledge_fallback_text = self._knowledge_ungrounded_fallback_text(
+                    tool_records
+                )
+                if is_knowledge_query and knowledge_fallback_text:
+                    text = knowledge_fallback_text
+                    response_type, image_path = self._response_metadata(
+                        last_command_result=last_command_result,
+                        last_image_result=last_image_result,
+                    )
+                    self._log_knowledge_summary(
+                        event=event,
+                        trace_id=trace_id,
+                        planning_result=planning_result,
+                        tool_records=tool_records,
+                        final_text=text,
+                    )
+                    await self._record_turn(event, text, trace_id=trace_id)
+                    return AgentResponse(
+                        text=text[: self._settings.max_reply_chars],
+                        response_type=response_type,
+                        image_path=image_path,
+                        token_usage=token_usage,
+                        should_send=bool(text.strip()) or response_type == "image",
+                        tool_calls=tool_records,
+                    )
                 text, rendering_tokens = await self._render_final_response(
                     event=event,
                     reply_context=reply_context,
@@ -295,6 +320,62 @@ class AgentRunner:
         if command_result.get("ok", False):
             return message or "工具执行完成。"
         return message or "工具执行失败，请稍后重试。"
+
+    def _knowledge_ungrounded_fallback_text(
+        self, tool_records: list[ToolCallRecord]
+    ) -> str:
+        search_records = [
+            record for record in tool_records if record.name == "search_game_knowledge"
+        ]
+        if not search_records:
+            return ""
+
+        read_records = [
+            record for record in tool_records if record.name == "read_game_knowledge_file"
+        ]
+        last_search = search_records[-1].result
+        last_search_data = last_search.get("data", {}) or {}
+        matched_count = self._extract_int(last_search_data.get("matched_count"), default=0)
+        query = str(
+            last_search_data.get("knowledge_query")
+            or last_search_data.get("knowledge_query_raw")
+            or ""
+        ).strip()
+
+        if not last_search.get("ok", False):
+            message = str(last_search.get("message", "") or "").strip()
+            return message or "游戏知识检索失败，暂时不能基于知识库证据回答。"
+
+        if matched_count <= 0:
+            subject = f"「{query}」" if query else "这个问题"
+            return (
+                f"知识库里暂时没有检索到与{subject}匹配的资料，"
+                "我不能基于知识库证据确认结论。可以换个塔名、升级名或更具体的关键词再查。"
+            )
+
+        if not read_records:
+            return (
+                "知识库命中了候选页面，但还没有读取到页面内容，"
+                "暂时不能基于证据回答。"
+            )
+
+        successful_reads = [
+            record
+            for record in read_records
+            if record.result.get("ok", False)
+            and self._extract_int(
+                (record.result.get("data", {}) or {}).get("content_chars"),
+                default=0,
+            )
+            > 0
+        ]
+        if not successful_reads:
+            return (
+                "知识库命中了候选页面，但没有成功读取到可用内容，"
+                "暂时不能基于证据回答。可以换个关键词或稍后重试。"
+            )
+
+        return ""
 
     def _response_metadata(
         self,
@@ -525,6 +606,21 @@ class AgentRunner:
             "穿透",
             "升级",
             "路线",
+            "上路",
+            "中路",
+            "下路",
+            "收益",
+            "加成",
+            "技能",
+            "商店",
+            "灵魂",
+            "陷阱",
+            "支援",
+            "亡灵",
+            "太阳神庙",
+            "永久啤酒",
+            "反迷彩",
+            "破铅",
             "ddt",
             "能不能",
             "抓",

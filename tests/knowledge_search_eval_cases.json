@@ -1,0 +1,402 @@
+[
+  {
+    "query": "@小污猫 野兽之主数据",
+    "expected_first": "野兽之主.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "runtime_log",
+    "notes": "唤醒词和数据弱词应剥离。"
+  },
+  {
+    "query": "004野兽之主能不能抓DDT",
+    "expected_first": "野兽之主.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "runtime_log",
+    "notes": "升级码、机制问法和 DDT 混合表达。"
+  },
+  {
+    "query": "野兽之主下路详细数据",
+    "expected_first": "野兽之主.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "runtime_log",
+    "notes": "实体和路线粘连。"
+  },
+  {
+    "query": "野兽之主路线3详细数据",
+    "expected_first": "野兽之主.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "runtime_log",
+    "notes": "路线数字表达。"
+  },
+  {
+    "query": "人鱼猴数据",
+    "expected_first": "人鱼猴.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "runtime_log",
+    "notes": "新塔中文名。"
+  },
+  {
+    "query": "野兽之主数据",
+    "expected_first": "野兽之主.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "runtime_log",
+    "notes": "真实日志中的泛化数据问法。"
+  },
+  {
+    "query": "野兽之主路线3数据",
+    "expected_first": "野兽之主.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "runtime_log",
+    "notes": "真实日志中的路线数字问法。"
+  },
+  {
+    "query": "Mermaid Monkey stats",
+    "expected_first": "人鱼猴.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_alias",
+    "notes": "英文别名和英文弱词。"
+  },
+  {
+    "query": "Beast Handler 004 DDT",
+    "expected_first": "野兽之主.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_alias",
+    "notes": "英文别名、升级码和机制词。"
+  },
+  {
+    "query": "逆戟鲸能不能抓DDT",
+    "expected_first": "逆戟鲸.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_mechanic",
+    "notes": "具体升级机制问题。"
+  },
+  {
+    "query": "下路野兽004数据",
+    "expected_first": "野兽之主.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_phrase",
+    "notes": "口语简称、路线和升级码。"
+  },
+  {
+    "query": "飞镖猴数据",
+    "expected_first": "飞镖猴.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_tower",
+    "notes": "基础塔数据问法。"
+  },
+  {
+    "query": "回旋镖猴机制",
+    "expected_first": "回旋镖猴.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_tower",
+    "notes": "基础塔机制问法。"
+  },
+  {
+    "query": "大炮价格伤害",
+    "expected_first": "大炮.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_tower",
+    "notes": "数据字段问法。"
+  },
+  {
+    "query": "图钉炮穿透攻速",
+    "expected_first": "图钉炮.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_tower",
+    "notes": "数据字段问法。"
+  },
+  {
+    "query": "冰猴能不能破铅",
+    "expected_first": "冰猴.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_mechanic",
+    "notes": "机制问法。"
+  },
+  {
+    "query": "胶水炮手数据",
+    "expected_first": "胶水炮手.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_tower",
+    "notes": "基础塔数据问法。"
+  },
+  {
+    "query": "狙击手猴中路数据",
+    "expected_first": "狙击手猴.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_route",
+    "notes": "路线问法。"
+  },
+  {
+    "query": "猴子潜艇上路机制",
+    "expected_first": "猴子潜艇.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_route",
+    "notes": "路线问法。"
+  },
+  {
+    "query": "海盗猴下路收益",
+    "expected_first": "海盗猴.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_route",
+    "notes": "路线问法。"
+  },
+  {
+    "query": "飞机数据",
+    "expected_first": "飞机.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_tower",
+    "notes": "基础塔数据问法。"
+  },
+  {
+    "query": "直升机中路支援",
+    "expected_first": "直升机.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_route",
+    "notes": "路线问法。"
+  },
+  {
+    "query": "迫击炮猴能不能反迷彩",
+    "expected_first": "迫击炮猴.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_mechanic",
+    "notes": "机制问法。"
+  },
+  {
+    "query": "机枪猴数据",
+    "expected_first": "机枪猴.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_tower",
+    "notes": "基础塔数据问法。"
+  },
+  {
+    "query": "法师猴下路亡灵",
+    "expected_first": "法师猴.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_route",
+    "notes": "路线问法。"
+  },
+  {
+    "query": "超猴侠太阳神庙",
+    "expected_first": "超猴侠.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_tower",
+    "notes": "关联升级问法。"
+  },
+  {
+    "query": "忍者猴数据",
+    "expected_first": "忍者猴.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_tower",
+    "notes": "基础塔数据问法。"
+  },
+  {
+    "query": "炼金术士永久啤酒",
+    "expected_first": "炼金术士.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_tower",
+    "notes": "关联升级问法。"
+  },
+  {
+    "query": "德鲁伊下路数据",
+    "expected_first": "德鲁伊.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_route",
+    "notes": "路线问法。"
+  },
+  {
+    "query": "香蕉农场收益",
+    "expected_first": "香蕉农场.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_tower",
+    "notes": "经济塔问法。"
+  },
+  {
+    "query": "刺钉工厂数据",
+    "expected_first": "刺钉工厂.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_tower",
+    "notes": "基础塔数据问法。"
+  },
+  {
+    "query": "猴子村下路收益加成",
+    "expected_first": "猴子村.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_route",
+    "notes": "真实日志近似问法。"
+  },
+  {
+    "query": "工程师猴陷阱",
+    "expected_first": "工程师猴.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_tower",
+    "notes": "升级/机制问法。"
+  },
+  {
+    "query": "昆西数据",
+    "expected_first": "昆西.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_hero",
+    "notes": "英雄数据问法。"
+  },
+  {
+    "query": "格温多琳技能",
+    "expected_first": "格温多琳.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_hero",
+    "notes": "英雄技能问法。"
+  },
+  {
+    "query": "奥本数据",
+    "expected_first": "奥本.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_hero",
+    "notes": "英雄数据问法。"
+  },
+  {
+    "query": "本杰明收益",
+    "expected_first": "本杰明.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_hero",
+    "notes": "英雄机制问法。"
+  },
+  {
+    "query": "艾泽里技能",
+    "expected_first": "艾泽里.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_hero",
+    "notes": "英雄技能问法。"
+  },
+  {
+    "query": "帕特数据",
+    "expected_first": "帕特•法斯第.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_hero",
+    "notes": "英雄简称问法。"
+  },
+  {
+    "query": "布里克尔技能",
+    "expected_first": "海军上将布里克尔.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_hero",
+    "notes": "英雄简称问法。"
+  },
+  {
+    "query": "艾蒂安反迷彩",
+    "expected_first": "艾蒂安.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_hero",
+    "notes": "英雄机制问法。"
+  },
+  {
+    "query": "萨乌达数据",
+    "expected_first": "萨乌达.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_hero",
+    "notes": "英雄数据问法。"
+  },
+  {
+    "query": "杰拉尔多商店",
+    "expected_first": "杰拉尔多.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_hero",
+    "notes": "英雄机制问法。"
+  },
+  {
+    "query": "科沃斯灵魂",
+    "expected_first": "科沃斯.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_hero",
+    "notes": "英雄机制问法。"
+  },
+  {
+    "query": "罗莎莉娅数据",
+    "expected_first": "罗莎莉娅.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_hero",
+    "notes": "英雄数据问法。"
+  },
+  {
+    "query": "西拉斯数据",
+    "expected_first": "西拉斯.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_hero",
+    "notes": "英雄数据问法。"
+  },
+  {
+    "query": "巨齿鲨数据",
+    "expected_first": "巨齿鲨.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_upgrade",
+    "notes": "野兽之主升级页面。"
+  },
+  {
+    "query": "霸王龙能不能打DDT",
+    "expected_first": "霸王龙.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_mechanic",
+    "notes": "升级机制问法。"
+  },
+  {
+    "query": "M.A.D伤害",
+    "expected_first": "M.A.D.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_upgrade",
+    "notes": "英文升级名和数据字段。"
+  },
+  {
+    "query": "气球终结者数据",
+    "expected_first": "气球终结者.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "synthetic_upgrade",
+    "notes": "升级页面数据问法。"
+  }
+]

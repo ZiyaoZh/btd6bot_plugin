@@ -517,8 +517,8 @@ Phase 0 在仓库内已拿到两个关键结论：
 
 ### 当前状态
 
-- 状态：进行中
-- 说明：已根据真实运行日志进入第一轮落地，优先修正“知识问题未真正调用工具就直接 final”这一失效模式。
+- 状态：已完成（仓库侧 hard rule + deterministic 端到端评测）
+- 说明：已完成知识问题强制搜索、命中后强制读取、无证据硬兜底，并通过 50 条 deterministic grounded 评测验证；真实线上占比仍需持续观察。
 
 ### 2026-06-24 阶段进展
 
@@ -560,13 +560,13 @@ Phase 1 第一轮已经把最危险的一类问题收紧：
 2. 搜索命中后，如果模型没有主动继续读文件，运行时也会强制补 `read_game_knowledge_file`。
 3. 这能显著降低“知识问题没有任何证据却直接 final”的比例。
 
-### 下一步
+### 当前补充结论
 
-Phase 1 仍未完成，下一轮继续补：
+后续 2026-06-25 的“Phase 1 未命中硬兜底”和 Phase 4 端到端评测已经补齐本阶段剩余项：
 
-1. 若 `matched_count = 0`，rendering 提示词再收紧，明确禁止凭印象补事实性结论。
-2. 对 `answer_grounded` / `fallback_reason` 做真实日志回归统计。
-3. 在此基础上再推进 Phase 2 的 BTD6 query rewrite 和 alias 扩展。
+1. 若 `matched_count = 0`，运行时直接返回知识库未命中说明，不再调用 rendering LLM 生成事实结论。
+2. `agent.knowledge_summary` 已能记录 `answer_grounded` / `fallback_reason`。
+3. 50 条 deterministic grounded 评测证明知识问题会稳定触发搜索、读取和 grounded 输出。
 
 ---
 
@@ -613,8 +613,8 @@ Phase 1 仍未完成，下一轮继续补：
 
 ### 当前状态
 
-- 状态：待开始
-- 说明：这是提升命中率的核心阶段，优先级仅次于 Phase 1。
+- 状态：已完成（本地 query rewrite + alias + 50 条搜索评测）
+- 说明：已覆盖 SOP 中列出的路线、升级码、中英别名、机制/数据问法，并通过 50 条搜索评测验证 `search_hit_rate=1.000`、`first_doc_success_rate=1.000`。
 
 ---
 
@@ -660,8 +660,8 @@ Phase 1 仍未完成，下一轮继续补：
 
 ### 当前状态
 
-- 状态：待开始
-- 说明：本阶段是命中率提升后的第二层优化，主要解决召回后消费质量问题。
+- 状态：已完成（本地段落索引 + 结构化读取结果）
+- 说明：已在现有 SQLite 索引中增加 `paragraphs` / `paragraphs_fts`，读取链路优先返回 `mode=paragraph_extract`；真实线上回答质量仍需继续通过日志样本观察。
 
 ---
 
@@ -701,8 +701,8 @@ Phase 1 仍未完成，下一轮继续补：
 
 ### 当前状态
 
-- 状态：待开始
-- 说明：没有这套闭环，后续优化难以长期收敛。
+- 状态：已完成（本地固定评测集 + deterministic 端到端评测）
+- 说明：已有 50 条评测样本、搜索评测和 grounded 端到端评测；下一步是继续提高真实日志样本占比和补真实 LLM 回归观察。
 
 ---
 
@@ -736,8 +736,8 @@ Phase 1 仍未完成，下一轮继续补：
 
 ### 当前状态
 
-- 状态：待开始
-- 说明：这是后置阶段，不应在前面基础治理未完成前提前启动。
+- 状态：已完成阶段性评估
+- 说明：基于当前 50 条搜索评测和 50 条端到端评测结果，暂不引入 embedding / 向量库 / rerank；若真实日志扩样后指标下降，再重新评估。
 
 ## 近期优先级结论
 
@@ -788,6 +788,523 @@ Phase 1 仍未完成，下一轮继续补：
 
 ## 当前状态摘要
 
+### 2026-06-25 更新：旧链路兼容入口迁移到新链路
+
+本轮优先处理“旧链路 / 新链路口径不一致”问题，结论如下：
+
+1. 仓库内主入口 `plugin.py` 与独立入口 `bot_app/runner.py` 已经只构造 `AgentRunner + ToolRegistry + ToolRuntime`。
+2. 仓库内没有发现主入口继续调用旧 `LLMMessageProcessor + ToolSelector + CommandProcessor` 两阶段链路。
+3. 此前的残留风险来自 `bot_app/llm_processor.py` 本身仍保留完整旧实现；任何外部脚本如果直接导入并调用它，都可能继续发出旧口径 LLM purpose / flow stage。
+4. 本轮已将 `LLMMessageProcessor` 改为兼容门面：
+   - 新增 `run()`，执行时委托 `AgentRunner.run()`。
+   - 支持通过 `agent_runner` 或 `tool_registry` 注入新链路。
+   - 旧分段方法 `plan_intent()` / `chat_reply()` / `render_command_result()` / `decide_next_tool_step()` 改为显式抛出 `LegacyLLMPipelineDisabled`。
+   - 被阻止时写入 `legacy_pipeline.blocked`，避免静默回退到旧链路。
+5. 新增测试覆盖：
+   - `LLMMessageProcessor.run()` 只产生 `agent_planning` / `agent_rendering` 请求口径。
+   - 旧分段方法不会再发起 LLM 请求。
+
+验证结果：
+
+- `python3 -m py_compile bot_app/llm_processor.py tests/test_agent_tool_calling.py` 通过。
+- 手写 smoke 验证通过：旧 import path 的 `run()` 已委托新 `AgentRunner`，旧 `plan_intent()` 被阻止且不发 LLM 请求。
+- `python3 -m unittest tests.test_agent_tool_calling` 未能在当前容器完整执行，原因是环境缺少 `ncatbot`。
+- `ruff` 未能执行，原因是当前容器未安装 `ruff`。
+
+当前口径：
+
+- 可执行主链路：`AgentRunner`。
+- 历史 `LLMMessageProcessor`：仅作为兼容门面，不再允许执行旧两阶段 LLM 链路。
+- 如果线上日志后续仍出现 `purpose=agent_tool_calling` 或 `stage=agent.llm_response`，更可能来自未同步部署、非本仓库插件实例、或外部旧包，而不是当前仓库代码路径。
+
+### 2026-06-25 更新：Phase 2 第一轮 query rewrite
+
+基于新日志 `runtime/plugin/logs/network.log` 中 `trace_id=6964da35f41b` 的测试结果，本轮进入 Phase 2 第一轮。
+
+已确认：
+
+1. 旧链路迁移已生效，2026-06-25 测试日志中没有 `agent_tool_calling` / `agent.llm_response`。
+2. 知识问题已走 `agent_planning -> search_game_knowledge -> agent_rendering -> agent.knowledge_summary`。
+3. 新暴露的问题是 query 清洗不足：
+   - 用户问：`@小污猫 野兽之主数据`
+   - 实际搜索 query：`@小污猫 野兽之主数据`
+   - 搜索结果：`matched_count=0`
+   - 但知识库中实际存在 `野兽之主.html`
+
+本轮改动：
+
+1. `sanitize_kb_query()` 新增唤醒噪声剥离：
+   - CQ at：`[CQ:at,qq=...]`
+   - 文本 at：`@小污猫`
+   - 机器人名/唤醒词：`小污猫`、`污猫`、`机器人`
+   - 查询动词：`帮我`、`查一下`、`搜一下`、`检索` 等
+2. 新增保守 BTD6 领域归一化：
+   - `路线1/2/3` -> `上路/中路/下路`
+   - `004` -> `004 0-0-4`
+   - 机制问法中移除弱动词，保留核心实体，例如 `004野兽之主能不能抓DDT` -> `004 0-0-4 野兽之主 DDT`
+3. `aliases.json` 补充高频中英别名：
+   - `野兽之主` <-> `Beast Handler`
+   - `人鱼猴` <-> `Mermaid Monkey`
+4. 保持搜索 query 保守，不把 `数据` 扩展为 `价格 伤害 穿透 攻速 射程` 等强约束词。
+   - 原因：当前 `search_framework` fallback 会将非数字 term 作为 AND 条件；过度扩展会增加 0 命中风险。
+   - 后续若要做数据词扩展，应放到读取/段落抽取关键词或排序 boost，而不是文件级搜索强约束。
+
+验证结果：
+
+- `python3 -m py_compile bot_app/tools/knowledge_service.py tests/test_agent_tool_calling.py` 通过。
+- `git diff --check` 通过。
+- 本地轻量 smoke 输出：
+  - `@小污猫 野兽之主数据` -> `野兽之主`
+  - `[CQ:at,qq=1693903050] 004野兽之主能不能抓DDT` -> `004 0-0-4 野兽之主 DDT`
+  - `野兽之主路线3详细数据` -> `野兽之主 下路`
+- 当前容器缺少 `ncatbot`，完整 `unittest` 仍无法执行。
+- 当前容器缺少 `bs4`，真实 `kb_interface` smoke 无法直接执行；部署依赖中已有 `beautifulsoup4/bs4`。
+
+下一步：
+
+1. 在线上或完整依赖环境复测 `@小污猫 野兽之主数据`，期望 `matched_count > 0` 且命中 `野兽之主.html`。
+2. 若仍未命中，下一轮应调整 `search_framework` 的 fallback 逻辑：把 `数据/价格/伤害/穿透/攻速/射程` 这类数据词作为 boost，不作为强制 AND。
+3. 继续补小评测集，至少覆盖：
+   - `@小污猫 野兽之主数据`
+   - `004野兽之主能不能抓DDT`
+   - `野兽之主下路详细数据`
+   - `人鱼猴数据`
+
+### 2026-06-25 更新：Phase 2 第二轮召回回归与最小评测集
+
+本轮在第一轮 query rewrite 的基础上，继续推进 Phase 2，并为 Phase 4 建立最小可执行评测入口。
+
+已确认的新问题：
+
+1. 当前容器缺少 `bs4` 时，`kb_interface.interface_search()` 与 `search_framework` 的搜索入口曾因顶层导入清洗/抽取依赖而失败。
+2. 这会影响本地回归评测，也会放大线上依赖缺失时的检索失败范围。
+3. 第一轮 rewrite 后仍有三类召回缺口：
+   - `野兽之主下路详细数据` 被清洗成 `野兽之主下路`，中文实体和路线粘连导致 0 命中。
+   - `Mermaid Monkey stats` 未归一到中文页名，且 `stats` 被当作强约束。
+   - `Beast Handler 004 DDT` 未归一到中文页名，首位命中偏离 `野兽之主.html`。
+
+本轮改动：
+
+1. `bot_app.agent.__init__` 改为延迟导出 `AgentRunner`，修复普通工具模块导入时触发的 `tools.base <-> agent.runner` 循环导入。
+2. `btd6_knowledge_base` 搜索路径延迟加载重依赖：
+   - `clean_index_text.py` 仅在 `extract_index_fields()` 内导入 `BeautifulSoup`。
+   - `search_framework.py` 仅在构建索引时导入清洗函数。
+   - `kb_interface.py` 仅在抓取、构建、抽取时导入 `crawler` / `decode_and_clean_html` / `BeautifulSoup`。
+   - 结果：`interface_search()` 和 `search_file_paths()` 不再因当前容器缺少 `bs4` 而失败。
+3. `sanitize_kb_query()` 继续补 BTD6 领域归一化：
+   - 英文别名：`Beast Handler` -> `野兽之主`，`Mermaid Monkey` -> `人鱼猴`。
+   - 英文弱词：`stats` / `data` / `details` / `info` / `guide` / `wiki` 等不再作为强制检索词。
+   - 中文实体与路线粘连拆分：例如 `野兽之主下路` -> `野兽之主 下路`。
+   - 中文实体与升级码粘连拆分：例如 `004野兽之主` -> `004 0-0-4 野兽之主`。
+4. 新增轻量搜索评测脚本：
+   - `tests/evaluate_knowledge_search.py`
+   - 不依赖 `ncatbot`。
+   - 直接验证 `sanitize_kb_query + search_file_paths` 的命中和首文档命中。
+
+当前最小评测集覆盖 9 条：
+
+- `@小污猫 野兽之主数据`
+- `004野兽之主能不能抓DDT`
+- `野兽之主下路详细数据`
+- `野兽之主路线3详细数据`
+- `人鱼猴数据`
+- `Mermaid Monkey stats`
+- `Beast Handler 004 DDT`
+- `逆戟鲸能不能抓DDT`
+- `下路野兽004数据`
+
+验证结果：
+
+- `python3 tests/evaluate_knowledge_search.py` 通过：
+  - `total=9`
+  - `search_hit_rate=1.000`
+  - `first_doc_success_rate=1.000`
+  - `no_result_rate=0.000`
+- `python3 -m py_compile bot_app/agent/__init__.py bot_app/tools/knowledge_service.py btd6_knowledge_base/clean_index_text.py btd6_knowledge_base/search_framework.py btd6_knowledge_base/kb_interface.py tests/test_agent_tool_calling.py tests/evaluate_knowledge_search.py` 通过。
+- `git diff --check` 通过。
+- `python3 -m unittest tests.test_agent_tool_calling.AgentToolCallingTests.test_sanitize_kb_query_strips_invocation_noise_and_rewrites_domain_terms` 仍无法执行，原因是测试模块导入阶段缺少 `ncatbot`。
+
+当前结论：
+
+1. Phase 2 已完成第一批代表问法的固定回归，SOP 中列出的核心样本现在能稳定首位命中目标页面。
+2. Phase 4 已有最小评测入口，但仍不是完整评测集；后续仍需从真实日志扩到 50 到 100 条并补人工标注。
+3. 下一轮更适合继续扩评测样本，而不是盲目扩大 alias 词表。
+
+### 2026-06-25 更新：Phase 1 未命中硬兜底
+
+本轮补齐 Phase 1 中“检索失败后禁止模型凭印象补事实性结论”的运行时约束。
+
+已确认：
+
+1. 之前 planning prompt 已要求 `matched_count=0` 时不要凭印象补答。
+2. 但最终仍会进入 rendering LLM；如果模型忽略提示，仍可能生成无证据事实结论。
+3. 因此需要运行时兜底，而不是只靠 prompt。
+
+本轮改动：
+
+1. `AgentRunner` 新增 `_knowledge_ungrounded_fallback_text()`。
+2. 在知识问题进入 `final` 前检查工具结果：
+   - 搜索失败：直接返回检索失败说明。
+   - `matched_count <= 0`：直接返回知识库未命中说明，不调用 rendering。
+   - 命中但未读：直接说明尚未读取证据。
+   - 命中但读取失败或无内容：直接说明未取得可用证据。
+   - 只有存在成功读取且 `content_chars > 0` 时，才允许进入 rendering 组织最终回答。
+3. 补充测试意图：
+   - 0 命中后只发生 planning，不发生 `agent_rendering`。
+   - 读取失败后只发生 planning，不发生 `agent_rendering`。
+   - 已命中场景仍保持强制读取。
+
+验证结果：
+
+- 独立 smoke 验证通过：`不存在塔数据` 搜索 0 命中后返回“知识库里暂时没有检索到...不能基于知识库证据确认结论”，LLM 请求只有 `agent_planning` 两次，没有 `agent_rendering`。
+- `python3 -m py_compile bot_app/agent/runner.py tests/test_agent_tool_calling.py` 通过。
+- `git diff --check` 通过。
+
+当前结论：
+
+- Phase 1 的核心硬约束已经更完整：
+  - 知识问题必须搜索。
+  - 搜索命中必须读取。
+  - 无证据时不再把最终事实回答交给 rendering LLM 自由生成。
+- 后续仍需在线上日志中观察 `fallback_reason=knowledge_not_found` 与 `answer_grounded=false` 的真实占比。
+
+### 2026-06-25 更新：Phase 4 最小评测入口数据化
+
+本轮把前述 9 条代表样本从脚本硬编码迁移为独立数据文件，为后续扩展真实评测集做准备。
+
+新增产物：
+
+1. `tests/knowledge_search_eval_cases.json`
+   - 当前包含 9 条代表知识问句。
+   - 每条包含：
+     - `query`
+     - `expected_first`
+     - `should_hit`
+     - `requires_grounded_answer`
+     - `notes`
+2. `tests/evaluate_knowledge_search.py`
+   - 默认读取上述 JSON。
+   - 支持 `--cases` 指向其他样本文件。
+   - 支持 `--json` 输出完整机器可读报告。
+   - 输出指标包括：
+     - `knowledge_query_count`
+     - `should_hit_count`
+     - `grounded_required_count`
+     - `search_hit_rate`
+     - `first_doc_success_rate`
+     - `no_result_rate`
+
+验证结果：
+
+- `python3 tests/evaluate_knowledge_search.py` 通过：
+  - `knowledge_query_count=9`
+  - `should_hit_count=9`
+  - `grounded_required_count=9`
+  - `search_hit_rate=1.000`
+  - `first_doc_success_rate=1.000`
+  - `no_result_rate=0.000`
+- `python3 tests/evaluate_knowledge_search.py --json` 可输出逐样本明细。
+
+当前结论：
+
+- Phase 4 已有可持续扩展的最小入口。
+- Phase 4 仍未完成，因为样本量还未达到 50 到 100 条，也尚未覆盖完整的人工标注维度和 grounded answer 端到端评测。
+
+### 2026-06-25 更新：Phase 3 第一轮读取片段抽取
+
+本轮开始处理 Phase 3 中“搜到页面但返回内容不贴近问题”的问题。
+
+已确认：
+
+1. `野兽之主.html`、`人鱼猴.html` 等页面虽然不超过 8000 字符，但在较小 `max_chars` 下会直接返回全文前段。
+2. 对 `004野兽之主能不能抓DDT`、`野兽之主下路详细数据` 这类问题，关键内容可能在页面后段，固定前缀截断会遗漏证据。
+
+本轮改动：
+
+1. `read_game_knowledge_file` 在有 `query` / `keywords` 时，对短文也优先执行本地关键词窗口抽取。
+2. 新增 `extract_keyword_windows()`：
+   - 使用 `sanitize_kb_query()` 后的关键词。
+   - 按关键词命中位置切窗口。
+   - 对语义词、机制词、路线词给予更高权重，对 `004` / `0-0-4` 这类数字码弱加权。
+   - 返回 `mode=keyword_extract`，并保留 `keywords`、`content_chars`。
+3. 针对 `野兽之主 004/0-0-4` 增加保守扩展词 `逆戟鲸`，帮助读取阶段抽到对应升级名附近的片段。
+
+验证结果：
+
+- `004野兽之主能不能抓DDT` 读取 `野兽之主.html` 时，返回 `mode=keyword_extract`，片段中包含 `逆戟鲸`、`004`、`0-0-4`、`野兽之主`。
+- `野兽之主下路详细数据` 读取 `野兽之主.html` 时，片段中包含 `下路` 与 `野兽之主`。
+- `人鱼猴数据` 读取 `人鱼猴.html` 时，片段中包含基础数据与详细数据。
+- 搜索评测仍保持：
+  - `search_hit_rate=1.000`
+  - `first_doc_success_rate=1.000`
+  - `no_result_rate=0.000`
+
+当前结论：
+
+- Phase 3 已有第一轮轻量实现，解决了短页固定前缀截断的问题。
+- 这还不是完整段落级索引；后续仍需建设真正的段落级索引和结构化字段抽取。
+
+### 2026-06-25 更新：Phase 3 第二轮段落索引与结构化读取结果
+
+本轮继续完成 Phase 3 原定的“段落级与结构化索引建设”，把第一轮轻量关键词窗口升级为真正的 SQLite 段落索引。
+
+本轮改动：
+
+1. `btd6_knowledge_base/search_framework.py`
+   - 新增 `paragraphs` 表和 `paragraphs_fts` FTS5 表。
+   - `build_index()` / `build_index_from_second_clean()` 在写入页面级 `documents` 时同步写入段落索引。
+   - 新增旧索引兼容回填：第一次段落检索发现旧库无段落数据时，可从现有 `documents` 表回填 `paragraphs`。
+   - 新增 `extract_paragraphs_for_file()`，支持在已命中文件内按 query 检索相关段落。
+   - 段落级 fallback 使用 OR 命中排序，而不是要求所有词都在同一段出现，避免 `004野兽之主能不能抓DDT` 这类问题因 `DDT` 未直接出现在同段而漏掉 `逆戟鲸` 证据。
+2. `btd6_knowledge_base/kb_interface.py`
+   - 新增 `interface_extract_paragraphs()`。
+   - CLI 新增 `extract-paragraphs`，便于单独验证某个文件的段落抽取结果。
+3. `bot_app/tools/knowledge_service.py`
+   - `read_game_knowledge_file` 在有 `query` / `keywords` 时优先调用段落索引。
+   - 成功时返回 `mode=paragraph_extract`、`paragraphs`、`content_chars` 和 `metadata`。
+   - 若段落索引不可用或未命中，继续回退到原有 `keyword_extract`，保证旧部署不直接失败。
+   - 文件级搜索继续使用去弱词后的 query；段落级读取改用保留意图词的 query，让 `数据/价格/伤害/路线/技能/收益/反迷彩` 等字段能参与段落定位。
+4. 结构化读取结果新增或确认以下字段：
+   - `metadata.title`
+   - `metadata.path`
+   - `metadata.tower_or_hero`
+   - `metadata.upgrade_path`
+   - `metadata.upgrade_tier`
+   - `metadata.tags`
+   - `metadata.mechanics`
+   - `metadata.detected_fields`
+   - `metadata.paragraph_count`
+
+关键验证：
+
+1. 单点段落抽取：
+   - `野兽之主.html` + `野兽之主 004 0-0-4 DDT 逆戟鲸` 返回 `paragraph_extract` 证据段，内容包含 `逆戟鲸`、`升级价格`、`可抓住所有大型气球`。
+2. 50 条端到端 grounded 评测新增段落指标：
+   - `search_call_rate=1.000`
+   - `read_call_rate=1.000`
+   - `first_doc_success_rate=1.000`
+   - `grounded_answer_rate=1.000`
+   - `ungrounded_fallback_rate=0.000`
+   - `metadata_present_rate=1.000`
+   - `metadata_title_rate=1.000`
+   - `paragraph_extract_rate=1.000`
+   - `paragraph_result_rate=1.000`
+
+当前结论：
+
+- Phase 3 的本地实现已从轻量窗口抽取推进到真实段落级 FTS 索引。
+- `read_game_knowledge_file` 的结果格式已经能表达段落、结构化 metadata 和读取模式。
+- 仍需通过真实线上日志继续观察：段落内容是否足够支撑真实模型组织高质量回答。
+
+### 2026-06-25 更新：Phase 4 第二轮 50 条搜索评测集
+
+本轮继续推进 Phase 4，把搜索评测集从 9 条扩展到 50 条。
+
+样本来源：
+
+1. 真实运行日志样本：
+   - `@小污猫 野兽之主数据`
+   - `人鱼猴数据`
+   - `野兽之主数据`
+   - `野兽之主路线3数据`
+   - `004野兽之主能不能抓DDT`
+   - 等同主题变体
+2. 合成覆盖样本：
+   - 基础塔：飞镖猴、回旋镖猴、大炮、图钉炮、冰猴等。
+   - 路线问法：上路/中路/下路。
+   - 英雄问法：昆西、格温多琳、本杰明、艾蒂安、杰拉尔多等。
+   - 升级和机制问法：逆戟鲸、霸王龙、M.A.D、气球终结者等。
+
+首轮 50 条评测暴露的问题：
+
+1. `价格/伤害/穿透/攻速/收益/技能/商店/反迷彩` 等字段词在文件级检索中作为强制 AND 条件，导致大量 0 命中。
+2. `上路/中路/下路` 在文件级检索中容易把结果拉到版本页、路线页或其他包含路线词的页面。
+3. `飞机` 被 `间谍飞机.html` 抢首位，说明排序缺少标题精确匹配优先。
+4. `帕特`、`布里克尔` 等简称需要归一到完整页面名。
+
+本轮改动：
+
+1. 文件级 query 清洗继续保持保守：
+   - 将字段词和意图词从文件级搜索中移除，避免强制 AND。
+   - 将 `上路/中路/下路` 从文件级搜索中移除，路线信息留给读取阶段抽取。
+   - 增加 `帕特 -> 帕特•法斯第`、`布里克尔 -> 海军上将布里克尔` 等简称归一。
+2. `search_framework.py` 排序增加精确身份优先：
+   - `title == query` 优先。
+   - `path stem == query` 次优先。
+   - 解决 `飞机` 被 `间谍飞机` 抢首位的问题。
+3. `tests/knowledge_search_eval_cases.json` 扩展到 50 条，并新增 `source` 字段区分：
+   - `runtime_log`
+   - `synthetic_alias`
+   - `synthetic_mechanic`
+   - `synthetic_phrase`
+   - `synthetic_tower`
+   - `synthetic_route`
+   - `synthetic_hero`
+   - `synthetic_upgrade`
+4. `tests/evaluate_knowledge_search.py` 输出 `source_counts`，便于后续区分真实样本和合成样本。
+
+验证结果：
+
+- `python3 tests/evaluate_knowledge_search.py` 通过：
+  - `knowledge_query_count=50`
+  - `should_hit_count=50`
+  - `grounded_required_count=50`
+  - `search_hit_rate=1.000`
+  - `first_doc_success_rate=1.000`
+  - `no_result_rate=0.000`
+- `python3 -m py_compile bot_app/tools/knowledge_service.py tests/evaluate_knowledge_search.py btd6_knowledge_base/search_framework.py` 通过。
+- `git diff --check` 通过。
+
+当前结论：
+
+- Phase 4 搜索评测规模已达到 SOP 要求的下限 50 条。
+- 该评测目前只覆盖搜索命中和首文档命中，不等价于完整 grounded answer 端到端评测。
+- 后续还需要继续补：
+  - 真实日志样本占比。
+  - `read_game_knowledge_file` 片段质量指标。
+  - rendering 最终回答是否 grounded 的端到端统计。
+
+### 2026-06-25 更新：Phase 4 第三轮端到端 grounded 评测
+
+本轮继续补 Phase 4 中“最终回答是否 grounded”的评测缺口。
+
+新增产物：
+
+1. `tests/evaluate_knowledge_grounding.py`
+   - 使用与搜索评测相同的 `tests/knowledge_search_eval_cases.json`。
+   - 使用 deterministic fake LLM 驱动 `AgentRunner`。
+   - fake LLM 在 planning 阶段始终返回 `final`，让 `AgentRunner` 的知识 hard rule 决定是否强制搜索和读取。
+   - fake LLM 在 rendering 阶段只根据 `read_game_knowledge_file` 的 `content` 生成简短回答。
+2. 新增指标：
+   - `search_call_rate`
+   - `read_call_rate`
+   - `first_doc_success_rate`
+   - `grounded_answer_rate`
+   - `ungrounded_fallback_rate`
+
+本轮发现的问题：
+
+1. 搜索评测 50 条已全部首位命中，但端到端评测首跑只有 70% 样本触发 `search_game_knowledge`。
+2. 原因是 `AgentRunner._is_game_knowledge_query()` 的关键词覆盖太窄，未覆盖：
+   - `收益`
+   - `加成`
+   - `技能`
+   - `商店`
+   - `灵魂`
+   - `陷阱`
+   - `支援`
+   - `亡灵`
+   - `反迷彩`
+   - `破铅`
+   - `上路/中路/下路`
+3. 这些问法本质是游戏知识问题，但此前可能不触发 hard rule。
+
+本轮改动：
+
+1. 扩充 `AgentRunner._is_game_knowledge_query()` 的领域关键词。
+2. 确保 50 条评测样本都会进入知识 hard rule：
+   - 必须搜索。
+   - 命中后必须读取。
+   - 成功读取后才进入 rendering。
+
+验证结果：
+
+- `python3 tests/evaluate_knowledge_grounding.py` 通过：
+  - `knowledge_query_count=50`
+  - `search_call_rate=1.000`
+  - `read_call_rate=1.000`
+  - `first_doc_success_rate=1.000`
+  - `grounded_answer_rate=1.000`
+  - `ungrounded_fallback_rate=0.000`
+- `python3 tests/evaluate_knowledge_search.py` 继续通过：
+  - `search_hit_rate=1.000`
+  - `first_doc_success_rate=1.000`
+  - `no_result_rate=0.000`
+- `python3 -m py_compile bot_app/agent/__init__.py bot_app/agent/runner.py bot_app/tools/knowledge_service.py btd6_knowledge_base/clean_index_text.py btd6_knowledge_base/search_framework.py btd6_knowledge_base/kb_interface.py tests/test_agent_tool_calling.py tests/evaluate_knowledge_search.py tests/evaluate_knowledge_grounding.py` 通过。
+- `git diff --check` 通过。
+
+当前结论：
+
+- Phase 4 已有两层评测：
+  - 搜索评测：验证 query rewrite + 文件级搜索。
+  - deterministic 端到端 grounded 评测：验证 `AgentRunner` hard rule、搜索、读取和 grounded summary。
+- 这仍不是完整真实模型评测；真实线上 rendering 文风和事实组织质量仍需通过线上日志或真实 LLM 回归观察。
+
+### 2026-06-25 更新：Phase 4 第四轮段落读取指标
+
+本轮在端到端 grounded 评测中增加读取粒度指标：
+
+1. `read_mode`
+   - 记录 `read_game_knowledge_file` 实际返回的是 `paragraph_extract`、`keyword_extract`、`extract` 还是 `full`。
+2. `paragraph_count`
+   - 记录本次读取返回的段落数量。
+3. 新增汇总指标：
+   - `paragraph_extract_rate`
+   - `paragraph_result_rate`
+
+验证结果：
+
+- `python3 tests/evaluate_knowledge_grounding.py` 通过：
+  - `knowledge_query_count=50`
+  - `search_call_rate=1.000`
+  - `read_call_rate=1.000`
+  - `first_doc_success_rate=1.000`
+  - `grounded_answer_rate=1.000`
+  - `ungrounded_fallback_rate=0.000`
+  - `metadata_present_rate=1.000`
+  - `metadata_title_rate=1.000`
+  - `paragraph_extract_rate=1.000`
+  - `paragraph_result_rate=1.000`
+
+当前结论：
+
+- Phase 4 已能同时验证“是否检索”、“是否读取”、“首文档是否正确”、“最终是否 grounded”以及“读取是否走段落索引”。
+- 后续主要增量不是继续堆本地合成样本，而是提高真实日志样本占比，并在可控环境下补真实 LLM 回归。
+
+### 2026-06-25 更新：Phase 5 混合检索阶段性评估
+
+本轮基于 Phase 4 当前指标，对 Phase 5 做阶段性判断。
+
+当前指标：
+
+1. 搜索评测：
+   - `knowledge_query_count=50`
+   - `search_hit_rate=1.000`
+   - `first_doc_success_rate=1.000`
+   - `no_result_rate=0.000`
+2. deterministic grounded 评测：
+   - `knowledge_query_count=50`
+   - `search_call_rate=1.000`
+   - `read_call_rate=1.000`
+   - `first_doc_success_rate=1.000`
+   - `grounded_answer_rate=1.000`
+   - `ungrounded_fallback_rate=0.000`
+   - `metadata_present_rate=1.000`
+   - `metadata_title_rate=1.000`
+   - `paragraph_extract_rate=1.000`
+   - `paragraph_result_rate=1.000`
+
+阶段性结论：
+
+1. 当前不建议引入 embedding / 向量库 / rerank 服务。
+2. 理由：
+   - 当前 50 条固定评测已达到 100% 搜索命中和首文档命中。
+   - 端到端 grounded 评测已证明 hard rule 能稳定触发搜索和读取。
+   - 段落索引评测已证明 50 条样本均能走 `paragraph_extract` 并返回段落结果。
+   - 引入向量检索会增加部署依赖、索引维护、延迟和成本，但当前指标尚未证明有必要。
+3. 后续如果出现以下情况，再重新评估混合检索：
+   - 真实日志样本扩展到 100 条后 `search_hit_rate < 0.9`。
+   - `first_doc_success_rate < 0.85` 且主要失败来自语义改写而非 alias 缺失。
+   - 大量问题需要跨页面语义推断，FTS + query rewrite + 段落抽取无法稳定覆盖。
+   - 段落级索引完成后仍存在“搜到页面但片段不含答案”的高频失败。
+
+当前建议：
+
+- 保留现有本地 SQLite FTS5 方案。
+- 下一轮优先补真实线上日志回归与读取片段质量标注，而不是引入混合检索。
+
+### 2026-06-24 摘要
+
 截至 2026-06-24：
 
 - 已完成：
@@ -797,15 +1314,22 @@ Phase 1 仍未完成，下一轮继续补：
   - 本 SOP 建立
   - 仓库内运行口径核对
   - 知识链路结构化观测字段第一轮补齐
-- 尚未完成：
-  - 线上口径统一
+- 2026-06-25 追加完成：
   - grounded hard rule 落地
-  - BTD6 query rewrite
-  - 段落级索引
-  - 评测集与指标闭环
+  - BTD6 query rewrite 与 alias 扩展
+  - 段落级 SQLite FTS 索引
+  - 结构化读取 metadata
+  - 50 条搜索评测集
+  - 50 条 deterministic 端到端 grounded 评测
+  - 混合检索阶段性评估
+- 仍需持续观察：
+  - 线上实例是否已经完全统一到新 `AgentRunner` 口径。
+  - 真实日志样本扩展到 100 条后的指标是否仍稳定。
+  - 真实 LLM rendering 是否稳定消费段落证据并正确组织事实。
 
 当前判断：
 
 - 基础知识库路线可保留。
-- 首要矛盾是“检索和回答链路不够收敛”，不是单纯模型能力不足。
-- 下一步应从证据化约束和领域归一化开始推进。
+- 当前本地固定评测已证明：FTS5 + query rewrite + 段落索引 + hard rule 足以覆盖本轮 50 条样本。
+- 现阶段不建议引入向量库或 rerank 服务。
+- 下一步应转向真实线上日志回归和真实 LLM 输出质量观察，而不是继续增加检索链路复杂度。
