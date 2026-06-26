@@ -34,12 +34,12 @@ def build_knowledge_tools(runtime: ToolRuntime) -> list[ConcreteTool]:
         ConcreteTool(
             spec={
                 "name": "search_game_knowledge",
-                "description": "检索 BTD6 游戏知识库，返回最相关的候选文件路径。通常应先调用本工具，再读取候选文件。",
+                "description": "检索 BTD6 游戏知识库，返回最相关的候选文件路径。query 优先传用户原始问题，服务端会自动清洗和扩展查询。",
                 "parameters": object_schema(
                     {
                         "query": {
                             "type": "string",
-                            "description": "要检索的 BTD6 游戏知识问题或关键词。",
+                            "description": "用户原始 BTD6 游戏知识问题；不要自行压缩成少量关键词。",
                         },
                         "top_n": {
                             "type": "integer",

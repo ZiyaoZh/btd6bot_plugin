@@ -13,8 +13,8 @@ KB_ROOT = PLUGIN_ROOT / "btd6_knowledge_base"
 sys.path.insert(0, str(PLUGIN_ROOT))
 sys.path.insert(0, str(KB_ROOT))
 
-from bot_app.tools.knowledge_service import sanitize_kb_query  # noqa: E402
-from search_framework import search_file_paths  # noqa: E402
+from bot_app.tools.knowledge_service import build_kb_query_plan  # noqa: E402
+from search_framework import search_file_candidates  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,10 @@ class SearchEvalCase:
 class SearchEvalResult:
     query: str
     sanitized_query: str
+    query_variants: list[str]
+    entity_terms: list[str]
+    mechanic_terms: list[str]
+    upgrade_terms: list[str]
     expected_first: str
     should_hit: bool
     requires_grounded_answer: bool
@@ -74,18 +78,27 @@ def load_cases(case_file: Path) -> list[SearchEvalCase]:
 
 
 def evaluate_case(case: SearchEvalCase, *, top_n: int) -> SearchEvalResult:
-    sanitized_query = sanitize_kb_query(case.query)
-    matched_paths = search_file_paths(
+    query_plan = build_kb_query_plan(case.query, kb_root=KB_ROOT)
+    matched_candidates = search_file_candidates(
         db_path=KB_ROOT / "search_index.db",
-        query=sanitized_query,
+        query=query_plan.normalized,
         top_k=top_n,
         corpus_dir=KB_ROOT / "wiki_data_second_cleaned" / "btd6",
         alias_file=KB_ROOT / "aliases.json",
+        query_variants=query_plan.variants,
+        entity_terms=query_plan.entity_terms,
+        mechanic_terms=query_plan.mechanic_terms,
+        upgrade_terms=query_plan.upgrade_terms,
     )
+    matched_paths = [str(item.get("path", "") or "") for item in matched_candidates]
     matched_files = [Path(path).name for path in matched_paths]
     return SearchEvalResult(
         query=case.query,
-        sanitized_query=sanitized_query,
+        sanitized_query=query_plan.normalized,
+        query_variants=query_plan.variants,
+        entity_terms=query_plan.entity_terms,
+        mechanic_terms=query_plan.mechanic_terms,
+        upgrade_terms=query_plan.upgrade_terms,
         expected_first=case.expected_first,
         should_hit=case.should_hit,
         requires_grounded_answer=case.requires_grounded_answer,

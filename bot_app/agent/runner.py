@@ -555,6 +555,22 @@ class AgentRunner:
         last_search_data = (last_search or {}).get("data", {}) or {}
         matched_count = self._extract_int(last_search_data.get("matched_count"), default=0)
         matched_paths = self._extract_string_list(last_search_data.get("matched_paths"))
+        read_paths = {
+            str((record.result.get("data", {}) or {}).get("file_path", "") or "").strip()
+            or str(record.arguments.get("file_path", "") or "").strip()
+            for record in read_records
+        }
+        read_paths = {path for path in read_paths if path}
+        successful_reads = [
+            record
+            for record in read_records
+            if record.result.get("ok", False)
+            and self._extract_int(
+                (record.result.get("data", {}) or {}).get("content_chars"),
+                default=0,
+            )
+            > 0
+        ]
 
         if not search_records:
             return PlanningResult(
@@ -567,6 +583,26 @@ class AgentRunner:
                     )
                 ],
             )
+
+        if matched_count > 0:
+            target_count = self._knowledge_read_target_count(last_search_data)
+            target_paths = matched_paths[:target_count]
+            unread_paths = [path for path in target_paths if path not in read_paths]
+            if (not read_records or not successful_reads) and unread_paths:
+                return PlanningResult(
+                    decision="call_tools",
+                    reason="知识库已命中，需读取候选文件证据。",
+                    tool_calls=[
+                        PlanningToolCall(
+                            name="read_game_knowledge_file",
+                            arguments={
+                                "file_path": path,
+                                "query": event["text"],
+                            },
+                        )
+                        for path in unread_paths
+                    ],
+                )
 
         if matched_count > 0 and not read_records:
             return PlanningResult(
@@ -593,11 +629,36 @@ class AgentRunner:
 
         return planning_result
 
+    def _knowledge_read_target_count(self, search_data: dict[str, object]) -> int:
+        matched_count = self._extract_int(search_data.get("matched_count"), default=0)
+        if matched_count <= 1:
+            return max(0, matched_count)
+
+        confidence = self._extract_float(search_data.get("confidence"), default=0.0)
+        score_margin = self._extract_float(search_data.get("score_margin"), default=0.0)
+        candidate_details = search_data.get("candidate_details", [])
+        top_reasons: list[str] = []
+        if isinstance(candidate_details, list) and candidate_details:
+            first = candidate_details[0]
+            if isinstance(first, dict):
+                raw_reasons = first.get("reasons", [])
+                if isinstance(raw_reasons, list):
+                    top_reasons = [str(item) for item in raw_reasons]
+
+        if confidence >= 0.9 and score_margin >= 120:
+            return 1
+        if any(reason in {"exact_title", "exact_path_stem"} for reason in top_reasons):
+            return 1
+        if confidence >= 0.75 and score_margin >= 60:
+            return min(2, matched_count)
+        return min(3, matched_count)
+
     def _is_game_knowledge_query(self, text: str) -> bool:
         normalized = str(text or "").lower()
         keywords = (
             "数据",
             "机制",
+            "资料",
             "属性",
             "伤害",
             "攻速",
@@ -625,9 +686,12 @@ class AgentRunner:
             "能不能",
             "抓",
             "野兽之主",
+            "驯兽师",
             "人鱼猴",
+            "鱼人猴",
             "beast handler",
             "mermaid monkey",
+            "brickell",
         )
         return any(keyword in normalized for keyword in keywords)
 
@@ -678,6 +742,8 @@ class AgentRunner:
         last_search_data = (last_search or {}).get("data", {}) or {}
         matched_count = self._extract_int(last_search_data.get("matched_count"), default=0)
         matched_paths = self._extract_string_list(last_search_data.get("matched_paths"))
+        candidate_details = last_search_data.get("candidate_details", [])
+        candidate_details = candidate_details if isinstance(candidate_details, list) else []
         read_paths: list[str] = []
         successful_read_paths: list[str] = []
         total_content_chars = 0
@@ -715,6 +781,15 @@ class AgentRunner:
             ).strip(),
             "matched_count": matched_count,
             "matched_paths": matched_paths,
+            "candidate_details": candidate_details[:5],
+            "confidence": self._extract_float(
+                last_search_data.get("confidence"),
+                default=0.0,
+            ),
+            "score_margin": self._extract_float(
+                last_search_data.get("score_margin"),
+                default=0.0,
+            ),
             "read_count": len(read_paths),
             "read_paths": read_paths,
             "successful_read_count": len(successful_read_paths),
@@ -729,6 +804,12 @@ class AgentRunner:
     def _extract_int(self, value: object, *, default: int = 0) -> int:
         try:
             return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return default
+
+    def _extract_float(self, value: object, *, default: float = 0.0) -> float:
+        try:
+            return float(value)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return default
 

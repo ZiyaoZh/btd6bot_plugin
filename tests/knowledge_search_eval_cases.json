@@ -72,6 +72,30 @@
     "notes": "英文别名、升级码和机制词。"
   },
   {
+    "query": "小污猫查一下驯兽师004可不可以抓ddt",
+    "expected_first": "野兽之主.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "runtime_phrase",
+    "notes": "口语别名、唤醒词、升级码和机制问法混合。"
+  },
+  {
+    "query": "鱼人猴资料",
+    "expected_first": "人鱼猴.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "runtime_phrase",
+    "notes": "常见错序/口语别名。"
+  },
+  {
+    "query": "brickell能给我看看技能吗",
+    "expected_first": "海军上将布里克尔.html",
+    "should_hit": true,
+    "requires_grounded_answer": true,
+    "source": "runtime_phrase",
+    "notes": "英文英雄简称和中文弱词混合。"
+  },
+  {
     "query": "逆戟鲸能不能抓DDT",
     "expected_first": "逆戟鲸.html",
     "should_hit": true,

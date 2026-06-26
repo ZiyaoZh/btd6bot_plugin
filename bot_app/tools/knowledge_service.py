@@ -1,15 +1,29 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import sys
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Iterator
 
 from ..protocol import CommandResultPayload, EventPayload
 from .base import fail_result, ok_result
+
+
+@dataclass(frozen=True)
+class SearchQueryPlan:
+    raw: str
+    normalized: str
+    invocation_stripped: str
+    entity_terms: list[str]
+    mechanic_terms: list[str]
+    upgrade_terms: list[str]
+    variants: list[str]
 
 
 def build_search_game_knowledge_result(
@@ -20,7 +34,8 @@ def build_search_game_knowledge_result(
     module: str,
 ) -> CommandResultPayload:
     raw_query = str(arguments.get("query", "") or "").strip() or event["text"]
-    query = sanitize_kb_query(raw_query)
+    query_plan = build_kb_query_plan(raw_query, kb_root=kb_root)
+    query = query_plan.normalized
     top_n_raw = arguments.get("top_n", 5)
     try:
         top_n = int(top_n_raw)
@@ -35,13 +50,35 @@ def build_search_game_knowledge_result(
 
     try:
         kb_interface = _load_kb_interface(kb_root)
-        paths = kb_interface.interface_search(
-            query=query,
-            top_n=top_n,
-            db_path=db_path,
-            corpus_dir=corpus_dir,
-            alias_file=alias_file,
-        )
+        if hasattr(kb_interface, "interface_search_with_metadata"):
+            candidate_items = kb_interface.interface_search_with_metadata(
+                query=query,
+                top_n=top_n,
+                db_path=db_path,
+                corpus_dir=corpus_dir,
+                alias_file=alias_file,
+                query_variants=query_plan.variants,
+                entity_terms=query_plan.entity_terms,
+                mechanic_terms=query_plan.mechanic_terms,
+                upgrade_terms=query_plan.upgrade_terms,
+            )
+            paths = [
+                str(item.get("path", "") or "")
+                for item in candidate_items
+                if str(item.get("path", "") or "").strip()
+            ]
+        else:
+            paths = kb_interface.interface_search(
+                query=query,
+                top_n=top_n,
+                db_path=db_path,
+                corpus_dir=corpus_dir,
+                alias_file=alias_file,
+            )
+            candidate_items = [
+                {"path": str(path), "score": 0.0, "confidence": 0.0, "reasons": []}
+                for path in paths
+            ]
     except Exception as exc:
         return fail_result(
             module=module,
@@ -51,15 +88,26 @@ def build_search_game_knowledge_result(
                 "query": query,
                 "knowledge_query": query,
                 "knowledge_query_raw": raw_query,
+                "query_plan": asdict(query_plan),
                 "top_n": top_n,
                 "matched_count": 0,
                 "matched_paths": [],
+                "candidate_details": [],
+                "confidence": 0.0,
+                "score_margin": 0.0,
             },
             message=f"游戏知识检索失败: {type(exc).__name__}",
             extra_prompt="请简要说明检索失败，并建议稍后重试或检查知识库索引文件。",
         )
 
     matched_paths = [str(path) for path in paths]
+    candidate_details = normalize_candidate_details(candidate_items)
+    top_confidence = (
+        float(candidate_details[0].get("confidence", 0.0))
+        if candidate_details
+        else 0.0
+    )
+    score_margin = compute_score_margin(candidate_details)
     return ok_result(
         module=module,
         command="search_game_knowledge",
@@ -68,14 +116,18 @@ def build_search_game_knowledge_result(
             "query": query,
             "knowledge_query": query,
             "knowledge_query_raw": raw_query,
+            "query_plan": asdict(query_plan),
             "top_n": top_n,
             "matched_count": len(matched_paths),
             "matched_paths": matched_paths,
+            "candidate_details": candidate_details,
+            "confidence": top_confidence,
+            "score_margin": score_margin,
         },
         message="游戏知识检索完成",
         extra_prompt=(
             "你已经拿到候选文件路径。"
-            "请先从 matched_paths 中选择最可能有答案的 1 个文件，再调用 read_game_knowledge_file 读取内容。"
+            "若 confidence 较高且 top1 明确，请先读取 top1；若 confidence 较低或候选分数接近，请读取前 2-3 个候选片段。"
             "若 matched_count=0，明确说明未检索到匹配文件，并建议用户换关键词。"
         ),
     )
@@ -88,7 +140,11 @@ def build_read_game_knowledge_file_result(
     module: str,
 ) -> CommandResultPayload:
     raw_path = str(arguments.get("file_path", "") or "").strip()
-    keywords_query = build_extract_keywords_query(arguments)
+    raw_keywords_query = build_extract_keywords_query(arguments)
+    keywords_query = build_extract_query_for_search(
+        raw_keywords_query,
+        kb_root=kb_root,
+    )
     max_chars_raw = arguments.get("max_chars", 8000)
     try:
         max_chars = int(max_chars_raw)
@@ -365,6 +421,21 @@ def build_extract_keywords_query(arguments: dict[str, Any]) -> str:
     return ""
 
 
+def build_extract_query_for_search(raw_query: str, *, kb_root: Path) -> str:
+    raw = str(raw_query or "").strip()
+    if not raw:
+        return ""
+    query_plan = build_kb_query_plan(raw, kb_root=kb_root)
+    focused_terms = [
+        *query_plan.entity_terms,
+        *query_plan.mechanic_terms,
+        *query_plan.upgrade_terms,
+    ]
+    if focused_terms:
+        return " ".join(_dedupe_texts(focused_terms))
+    return query_plan.normalized or raw
+
+
 def build_kb_content_metadata(
     content: str,
     *,
@@ -542,6 +613,285 @@ def _keyword_weight(keyword: str) -> int:
     if keyword in {"上路", "中路", "下路"}:
         return 10
     return 15
+
+
+def normalize_candidate_details(
+    candidate_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    details: list[dict[str, Any]] = []
+    for item in candidate_items:
+        path = str(item.get("path", "") or "").strip()
+        if not path:
+            continue
+        reasons = item.get("reasons", [])
+        if not isinstance(reasons, list):
+            reasons = [str(reasons)]
+        details.append(
+            {
+                "path": path,
+                "title": str(item.get("title", "") or "").strip(),
+                "score": _safe_float(item.get("score"), default=0.0),
+                "confidence": _safe_float(item.get("confidence"), default=0.0),
+                "reasons": [str(reason) for reason in reasons if str(reason).strip()],
+                "query_variant": str(item.get("query_variant", "") or "").strip(),
+                "channel": str(item.get("channel", "") or "").strip(),
+                "snippet": str(item.get("snippet", "") or "").strip()[:240],
+            }
+        )
+    return details
+
+
+def compute_score_margin(candidate_details: list[dict[str, Any]]) -> float:
+    if len(candidate_details) < 2:
+        if not candidate_details:
+            return 0.0
+        return _safe_float(candidate_details[0].get("score"), default=0.0)
+    return round(
+        _safe_float(candidate_details[0].get("score"), default=0.0)
+        - _safe_float(candidate_details[1].get("score"), default=0.0),
+        3,
+    )
+
+
+def _safe_float(value: object, *, default: float = 0.0) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def build_kb_query_plan(raw_query: str, *, kb_root: Path) -> SearchQueryPlan:
+    raw = str(raw_query or "").strip()
+    invocation_stripped = strip_kb_query_invocation_noise(raw)
+    normalized_terms = normalize_btd6_search_terms(invocation_stripped)
+    normalized = sanitize_kb_query(raw)
+    entity_terms = detect_entity_terms(
+        " ".join([raw, invocation_stripped, normalized_terms, normalized]),
+        kb_root=kb_root,
+    )
+    entity_terms = prioritize_entity_terms(entity_terms, primary_query=normalized)
+    mechanic_terms = detect_mechanic_terms(raw)
+    upgrade_terms = detect_upgrade_terms(raw)
+
+    if "野兽之主" in entity_terms and any(
+        term in {"004", "0-0-4"} for term in upgrade_terms
+    ):
+        entity_terms = _dedupe_texts([*entity_terms, "逆戟鲸"])
+
+    variants = build_query_variants(
+        raw=raw,
+        invocation_stripped=invocation_stripped,
+        normalized_terms=normalized_terms,
+        normalized=normalized,
+        entity_terms=entity_terms,
+        mechanic_terms=mechanic_terms,
+        upgrade_terms=upgrade_terms,
+    )
+    return SearchQueryPlan(
+        raw=raw,
+        normalized=normalized,
+        invocation_stripped=invocation_stripped,
+        entity_terms=entity_terms,
+        mechanic_terms=mechanic_terms,
+        upgrade_terms=upgrade_terms,
+        variants=variants,
+    )
+
+
+def build_query_variants(
+    *,
+    raw: str,
+    invocation_stripped: str,
+    normalized_terms: str,
+    normalized: str,
+    entity_terms: list[str],
+    mechanic_terms: list[str],
+    upgrade_terms: list[str],
+) -> list[str]:
+    variants: list[str] = [
+        normalized,
+        normalized_terms,
+        invocation_stripped,
+    ]
+    if entity_terms:
+        variants.append(" ".join(entity_terms))
+        if mechanic_terms:
+            variants.append(" ".join([*entity_terms, *mechanic_terms]))
+        if upgrade_terms:
+            variants.append(" ".join([*entity_terms, *upgrade_terms]))
+        if mechanic_terms or upgrade_terms:
+            variants.append(" ".join([*entity_terms, *mechanic_terms, *upgrade_terms]))
+    if mechanic_terms and upgrade_terms:
+        variants.append(" ".join([*mechanic_terms, *upgrade_terms]))
+    variants.append(raw)
+    return _dedupe_texts(variants)
+
+
+def detect_entity_terms(query: str, *, kb_root: Path) -> list[str]:
+    text = re.sub(r"\s+", " ", str(query or "")).strip()
+    folded = text.lower()
+    terms: list[str] = []
+
+    for alias, canonical in service_alias_map(kb_root).items():
+        if alias and alias in folded:
+            terms.append(canonical)
+
+    for title in kb_title_terms(kb_root):
+        if not title:
+            continue
+        if title.lower() in folded:
+            terms.append(title)
+
+    generic_terms = {"猴子", "防御塔", "英雄", "技能"}
+    return [term for term in _dedupe_texts(terms) if term not in generic_terms]
+
+
+def prioritize_entity_terms(entity_terms: list[str], *, primary_query: str) -> list[str]:
+    primary = str(primary_query or "").strip().lower()
+    if not primary:
+        return entity_terms
+    exact = [term for term in entity_terms if term.lower() == primary]
+    containing = [
+        term
+        for term in entity_terms
+        if term.lower() != primary and term.lower() in primary
+    ]
+    remaining = [
+        term
+        for term in entity_terms
+        if term.lower() != primary and term.lower() not in primary
+    ]
+    return _dedupe_texts([*exact, *containing, *remaining])
+
+
+def detect_mechanic_terms(query: str) -> list[str]:
+    folded = str(query or "").lower()
+    mechanic_aliases = {
+        "DDT": ("ddt",),
+        "MOAB": ("moab", "飞艇", "大型气球"),
+        "BAD": ("bad",),
+        "ZOMG": ("zomg",),
+        "BFB": ("bfb",),
+        "迷彩": ("迷彩", "反迷彩", "侦测", "隐形"),
+        "铅": ("铅", "破铅"),
+        "紫气球": ("紫气球", "紫球"),
+        "收益": ("收益", "现金", "金钱", "经济"),
+        "射程": ("射程", "范围"),
+    }
+    terms: list[str] = []
+    for canonical, aliases in mechanic_aliases.items():
+        if any(alias.lower() in folded for alias in aliases):
+            terms.append(canonical)
+    return _dedupe_texts(terms)
+
+
+def detect_upgrade_terms(query: str) -> list[str]:
+    terms: list[str] = []
+    upgrade_pattern = r"(?<![\d-])([0-5])-([0-5])-([0-5])(?![\d-])"
+    for match in re.finditer(upgrade_pattern, query or ""):
+        code = "".join(match.groups())
+        terms.extend([code, f"{code[0]}-{code[1]}-{code[2]}"])
+    for match in re.finditer(r"(?<![\d-])([0-5]{3})(?![\d-])", query or ""):
+        code = match.group(1)
+        terms.extend([code, f"{code[0]}-{code[1]}-{code[2]}"])
+    return _dedupe_texts(terms)
+
+
+def service_alias_map(kb_root: Path) -> dict[str, str]:
+    alias_map = {
+        "beast handler": "野兽之主",
+        "beast": "野兽之主",
+        "驯兽师": "野兽之主",
+        "野兽": "野兽之主",
+        "mermaid monkey": "人鱼猴",
+        "mermonkey": "人鱼猴",
+        "鱼人猴": "人鱼猴",
+        "m.a.d": "M.A.D",
+        "mad": "M.A.D",
+        "pat": "帕特•法斯第",
+        "brickell": "海军上将布里克尔",
+        "etienne": "艾蒂安",
+        "adora": "阿多拉",
+        "quincy": "昆西",
+        "gwen": "格温多琳",
+        "geraldo": "杰拉尔多",
+        "sauda": "萨乌达",
+        "corvus": "科沃斯",
+        "ezili": "艾泽里",
+        "海盗": "海盗猴",
+        "潜艇": "猴子潜艇",
+    }
+    alias_map.update(load_alias_canonicals(kb_root / "aliases.json"))
+    return {key.lower(): value for key, value in alias_map.items() if key and value}
+
+
+def load_alias_canonicals(alias_file: Path) -> dict[str, str]:
+    if not alias_file.exists():
+        return {}
+    try:
+        data = json.loads(alias_file.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    result: dict[str, str] = {}
+    for raw_key, raw_values in data.items():
+        key = str(raw_key or "").strip()
+        values = raw_values if isinstance(raw_values, list) else [raw_values]
+        clean_values = [
+            str(value or "").strip()
+            for value in values
+            if str(value or "").strip()
+        ]
+        cjk_values = [
+            value for value in clean_values if re.search(r"[\u4e00-\u9fff]", value)
+        ]
+        canonical = (
+            key
+            if re.search(r"[\u4e00-\u9fff]", key)
+            else (cjk_values[0] if cjk_values else key)
+        )
+        if key:
+            result[key] = canonical
+        for value in clean_values:
+            result[value] = canonical
+    return result
+
+
+def kb_title_terms(kb_root: Path) -> list[str]:
+    corpus_dir = kb_root / "wiki_data_second_cleaned" / "btd6"
+    return _cached_kb_title_terms(str(corpus_dir.resolve(strict=False)))
+
+
+@lru_cache(maxsize=8)
+def _cached_kb_title_terms(corpus_dir: str) -> list[str]:
+    root = Path(corpus_dir)
+    if not root.exists():
+        return []
+    titles = []
+    for path in root.rglob("*.html"):
+        title = path.stem.strip()
+        if title:
+            titles.append(title)
+    titles = _dedupe_texts(titles)
+    titles.sort(key=len, reverse=True)
+    return titles
+
+
+def _dedupe_texts(items: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = re.sub(r"\s+", " ", str(item or "")).strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
 
 
 def resolve_safe_kb_path(raw_path: str, *, kb_root: Path) -> Path | None:
