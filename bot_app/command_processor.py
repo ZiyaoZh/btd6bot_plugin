@@ -19,6 +19,7 @@ from .tools.knowledge_service import (
 )
 from .tools.manual_service import build_script_manual_query_result
 from .tools.mini_game_service import build_monkey_box_opening_result
+from .tools.web_search_service import build_search_web_result
 from .tools.social_service import (
     build_summarize_recent_messages_result,
     build_today_most_active_result,
@@ -101,6 +102,9 @@ class CommandProcessor:
 
         if command_name in {"read_game_knowledge_file", "read_kb_file", "kb_read"}:
             return self._handle_read_game_knowledge_file(arguments)
+
+        if command_name in {"search_web", "web_search", "联网搜索", "网页搜索"}:
+            return self._handle_search_web(arguments)
 
         if command_name in {
             "get_activity_detail",
@@ -247,6 +251,12 @@ class CommandProcessor:
     def _handle_read_game_knowledge_file(self, arguments: dict) -> CommandResultPayload:
         return build_read_game_knowledge_file_result(
             kb_root=self._kb_root_dir,
+            arguments=arguments,
+            module="command_processor",
+        )
+
+    def _handle_search_web(self, arguments: dict) -> CommandResultPayload:
+        return build_search_web_result(
             arguments=arguments,
             module="command_processor",
         )

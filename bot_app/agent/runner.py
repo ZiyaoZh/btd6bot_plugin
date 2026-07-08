@@ -324,6 +324,9 @@ class AgentRunner:
     def _knowledge_ungrounded_fallback_text(
         self, tool_records: list[ToolCallRecord]
     ) -> str:
+        if self._has_successful_web_search(tool_records):
+            return ""
+
         search_records = [
             record for record in tool_records if record.name == "search_game_knowledge"
         ]
@@ -653,6 +656,20 @@ class AgentRunner:
             return min(2, matched_count)
         return min(3, matched_count)
 
+    def _has_successful_web_search(self, tool_records: list[ToolCallRecord]) -> bool:
+        for record in tool_records:
+            if record.name != "search_web":
+                continue
+            if not record.result.get("ok", False):
+                continue
+            data = record.result.get("data", {}) or {}
+            if self._extract_int(data.get("result_count"), default=0) > 0:
+                return True
+            results = data.get("results", [])
+            if isinstance(results, list) and results:
+                return True
+        return False
+
     def _is_game_knowledge_query(self, text: str) -> bool:
         normalized = str(text or "").lower()
         keywords = (
@@ -728,10 +745,14 @@ class AgentRunner:
         read_records = [
             record for record in tool_records if record.name == "read_game_knowledge_file"
         ]
+        web_records = [
+            record for record in tool_records if record.name == "search_web"
+        ]
         planned_knowledge = bool(
             planning_result
             and any(
-                item.name in {"search_game_knowledge", "read_game_knowledge_file"}
+                item.name
+                in {"search_game_knowledge", "read_game_knowledge_file", "search_web"}
                 for item in planning_result.tool_calls
             )
         )
@@ -759,9 +780,28 @@ class AgentRunner:
                 default=0,
             )
 
-        answer_grounded = bool(successful_read_paths)
+        web_queries: list[str] = []
+        web_result_count = 0
+        successful_web_count = 0
+        for record in web_records:
+            data = record.result.get("data", {}) or {}
+            query = str(data.get("query", "") or "").strip()
+            if query:
+                web_queries.append(query)
+            result_count = self._extract_int(data.get("result_count"), default=0)
+            results = data.get("results", [])
+            if result_count <= 0 and isinstance(results, list):
+                result_count = len(results)
+            web_result_count += max(0, result_count)
+            if record.result.get("ok", False) and result_count > 0:
+                successful_web_count += 1
+
+        web_grounded = successful_web_count > 0
+        answer_grounded = bool(successful_read_paths) or web_grounded
         fallback_reason = ""
-        if search_records:
+        if web_grounded:
+            fallback_reason = ""
+        elif search_records:
             if not last_search or not last_search.get("ok", False):
                 fallback_reason = "knowledge_search_failed"
             elif matched_count <= 0:
@@ -794,6 +834,11 @@ class AgentRunner:
             "read_paths": read_paths,
             "successful_read_count": len(successful_read_paths),
             "successful_read_paths": successful_read_paths,
+            "web_search_count": len(web_records),
+            "web_search_queries": web_queries,
+            "web_search_result_count": web_result_count,
+            "successful_web_search_count": successful_web_count,
+            "web_grounded": web_grounded,
             "answer_grounded": answer_grounded,
             "fallback_reason": fallback_reason,
             "final_response_has_text": bool((final_text or "").strip()),

@@ -63,6 +63,16 @@ _FEATURE_CATALOG: list[dict[str, Any]] = [
         "examples": ["查询收集活动", "看一下收集轮换图", "获取 upcoming 收集活动"],
     },
     {
+        "name": "search_web",
+        "aliases": ["web_search", "联网搜索", "网页搜索"],
+        "description": "联网搜索公开网页，作为其他工具无结果、失败、信息可能过时或需要当前公开资料时的备用证据路径",
+        "arguments": {
+            "query": "搜索关键词或完整问题",
+            "top_n": "返回前 N 个网页候选，默认 5，范围 1-8",
+        },
+        "examples": ["联网搜索某产品最新公告", "网页搜索 BTD6 最新版本削弱"],
+    },
+    {
         "name": "simulate_monkey_box_opening",
         "aliases": ["open_monkey_box", "game_box_opening", "开箱模拟", "收集开箱"],
         "description": "模拟 BTD6 开箱并返回统计文档，箱子数量 <=50 时额外返回图片",

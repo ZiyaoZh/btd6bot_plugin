@@ -25,6 +25,7 @@ class ToolSelector:
                 "get_activity_leaderboard",
                 "get_collection_event_info",
             ],
+            "web_search": ["search_web"],
             "mini_game": ["simulate_monkey_box_opening"],
         }
 
@@ -52,6 +53,10 @@ class ToolSelector:
             "collection_schedule": "game_news",
             "收集活动查询": "game_news",
             "游戏最新资讯获取": "game_news",
+            "web_search": "web_search",
+            "search_web": "web_search",
+            "联网搜索": "web_search",
+            "网页搜索": "web_search",
             "mini_game": "mini_game",
             "simulate_monkey_box_opening": "mini_game",
             "open_monkey_box": "mini_game",

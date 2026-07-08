@@ -13,6 +13,7 @@ from ..tools import (
     build_manual_tools,
     build_mini_game_tools,
     build_social_tools,
+    build_web_tools,
     fail_result,
     normalize_result,
 )
@@ -76,6 +77,7 @@ class ToolRegistry:
             *build_knowledge_tools(self._runtime),
             *build_activity_tools(self._runtime),
             *build_mini_game_tools(self._runtime),
+            *build_web_tools(self._runtime),
         ]
 
 

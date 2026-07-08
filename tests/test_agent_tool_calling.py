@@ -37,6 +37,7 @@ from bot_app.sender import MessageSender  # noqa: E402
 from bot_app.settings import AppSettings  # noqa: E402
 from bot_app.tools import ToolRuntime  # noqa: E402
 from bot_app.tools.knowledge_service import sanitize_kb_query  # noqa: E402
+from bot_app.tools.web_search_service import parse_duckduckgo_results  # noqa: E402
 from bot_app.tools.features import get_feature_catalog  # noqa: E402
 from bot_app.tools.social_service import build_summarize_recent_messages_result  # noqa: E402
 from bot_app.tools.subprocess_runner import ProcessResult  # noqa: E402
@@ -430,6 +431,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                 "get_activity_leaderboard",
                 "get_collection_event_info",
                 "simulate_monkey_box_opening",
+                "search_web",
             },
         )
         for tool in registry.to_openai_tools():
@@ -505,6 +507,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                 ("get_activity_detail", {"activity_type": "race"}, False),
                 ("get_activity_leaderboard", {"leaderboard_type": "race"}, False),
                 ("get_collection_event_info", {"only_upcoming": True}, False),
+                ("search_web", {}, False),
                 (
                     "simulate_monkey_box_opening",
                     {"box_type": "钻石", "box_count": 1},
@@ -637,6 +640,83 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(rejected_result["ok"])
         self.assertEqual(command_processor.calls, [])
         self.assertNotIn(str(kb_root.resolve()), sys.path)
+
+    def test_parse_duckduckgo_results_extracts_public_result_fields(self) -> None:
+        html = """
+        <html><body>
+          <div class="result">
+            <a class="result__a" href="/l/?kh=-1&amp;uddg=https%3A%2F%2Fexample.com%2Fbtd6%2Fpatch">
+              BTD6 Patch Notes
+            </a>
+            <a class="result__snippet">Latest update notes and tower changes.</a>
+          </div>
+          <div class="result">
+            <a class="result__a" href="https://wiki.biligame.com/btd6/DDT">DDT</a>
+            <div class="result__snippet">DDT properties and counters.</div>
+          </div>
+          <table>
+            <tr>
+              <td>
+                <a class="result-link" href="https://tdgametools.com/tools/btd6-bloon-counter-checker">
+                  BTD6 Bloon Counter Checker
+                </a>
+              </td>
+            </tr>
+            <tr><td>Plain-English counter plan for DDTs.</td></tr>
+          </table>
+        </body></html>
+        """
+
+        results = parse_duckduckgo_results(html, top_n=5)
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(results[0]["rank"], 1)
+        self.assertEqual(results[0]["title"], "BTD6 Patch Notes")
+        self.assertEqual(results[0]["url"], "https://example.com/btd6/patch")
+        self.assertEqual(results[0]["source_domain"], "example.com")
+        self.assertIn("tower changes", results[0]["snippet"])
+        self.assertEqual(results[1]["source_domain"], "wiki.biligame.com")
+        self.assertEqual(results[2]["source_domain"], "tdgametools.com")
+
+    async def test_web_search_tool_uses_runtime_registry_without_real_network(
+        self,
+    ) -> None:
+        class FakeSearchResponse:
+            text = """
+            <html><body>
+              <div class="result">
+                <a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fguide">
+                  BTD6 DDT counter guide
+                </a>
+                <div class="result__snippet">Use camo detection and lead-popping damage.</div>
+              </div>
+            </body></html>
+            """
+
+            def raise_for_status(self) -> None:
+                return None
+
+        command_processor = FakeCommandProcessor()
+        registry = ToolRegistry(_runtime(command_processor))
+        with patch(
+            "bot_app.tools.web_search_service.requests.post",
+            return_value=FakeSearchResponse(),
+        ) as fake_get:
+            result = await registry.execute(
+                "search_web",
+                {"query": "@小污猫 BTD6 DDT counter", "top_n": 3},
+                _event("搜一下 DDT 怎么处理"),
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["module"], "tool.web")
+        self.assertEqual(result["data"]["query"], "BTD6 DDT counter")
+        self.assertEqual(result["data"]["result_count"], 1)
+        self.assertEqual(result["data"]["results"][0]["source_domain"], "example.com")
+        self.assertIn("法律", result["extra_prompt"])
+        self.assertIn("违法违规", result["extra_prompt"])
+        fake_get.assert_called_once()
+        self.assertEqual(command_processor.calls, [])
 
     def test_build_knowledge_summary_marks_grounded_read(self) -> None:
         runner = AgentRunner(
@@ -868,6 +948,81 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             [request["purpose"] for request in llm.requests],
             ["agent_planning", "agent_planning"],
         )
+
+    async def test_agent_can_use_web_search_after_knowledge_miss(self) -> None:
+        class FakeSearchResponse:
+            text = """
+            <html><body>
+              <div class="result">
+                <a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fbtd6%2Fddt">
+                  BTD6 DDT guide
+                </a>
+                <div class="result__snippet">DDTs need camo detection and lead-popping damage.</div>
+              </div>
+            </body></html>
+            """
+
+            def raise_for_status(self) -> None:
+                return None
+
+        command_processor = FakeCommandProcessor()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin_root = _create_temp_plugin_root(temp_dir)
+            _create_empty_fake_knowledge_base(plugin_root)
+            runtime = _runtime(command_processor, plugin_root=plugin_root, db=FakeDb())
+            registry = ToolRegistry(runtime)
+            llm = FakeLLM(
+                [
+                    _planning_response("final", reason="先让硬规则检索知识库"),
+                    _planning_response(
+                        "call_tools",
+                        reason="知识库未命中，改用联网搜索",
+                        tool_calls=[
+                            {
+                                "name": "search_web",
+                                "arguments": {
+                                    "query": "BTD6 DDT counter guide",
+                                    "top_n": 3,
+                                },
+                            }
+                        ],
+                    ),
+                    _planning_response("final", reason="联网结果足够回答"),
+                    _assistant_response("联网资料显示，DDT 需要迷彩侦测和破铅伤害。"),
+                ]
+            )
+            runner = AgentRunner(
+                llm=llm,  # type: ignore[arg-type]
+                memory=GroupChatMemory(history_turns=3),
+                settings=_settings(),
+                tool_registry=registry,
+                tool_runtime=runtime,
+                context_manager=FakeContextManager(),  # type: ignore[arg-type]
+            )
+
+            with patch(
+                "bot_app.tools.web_search_service.requests.post",
+                return_value=FakeSearchResponse(),
+            ) as fake_get:
+                response = await runner.run(
+                    _event("DDT怎么处理比较稳 数据"), trace_id="test-trace"
+                )
+
+        self.assertEqual(response.text, "联网资料显示，DDT 需要迷彩侦测和破铅伤害。")
+        self.assertEqual(
+            [record.name for record in response.tool_calls],
+            ["search_game_knowledge", "search_web"],
+        )
+        self.assertEqual(
+            [request["purpose"] for request in llm.requests],
+            [
+                "agent_planning",
+                "agent_planning",
+                "agent_planning",
+                "agent_rendering",
+            ],
+        )
+        fake_get.assert_called_once()
 
     async def test_agent_uses_deterministic_fallback_after_knowledge_read_failure(
         self,
@@ -1206,6 +1361,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("闲聊规则", prompt)
         self.assertIn("工具规则", prompt)
         self.assertIn("完成规则", prompt)
+        self.assertIn("search_web", prompt)
+        self.assertIn("当前公开网页资料", prompt)
+        self.assertIn("法律法规限制", prompt)
 
     async def test_image_tool_result_is_returned_with_final_text(self) -> None:
         command_processor = FakeCommandProcessor()
