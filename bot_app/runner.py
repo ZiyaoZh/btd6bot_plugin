@@ -190,11 +190,7 @@ def create_bot() -> BotClient:
                 return
 
             reply_for_memory = agent_response.text
-            final_reply = _append_token_cost_line(
-                reply_for_memory,
-                agent_response.token_usage,
-                settings.max_reply_chars,
-            )
+            final_reply = reply_for_memory[: settings.max_reply_chars]
             llm.pop_trace_total_tokens(trace_id)
 
             if agent_response.response_type == "image" and agent_response.image_path:
@@ -242,21 +238,6 @@ def create_bot() -> BotClient:
             log_flow(stage="sender.sent", trace_id=trace_id, reply=public_error)
 
     return bot
-
-
-def _append_token_cost_line(text: str, total_tokens: int, max_chars: int) -> str:
-    base = (text or "").strip()
-    cost_line = f"本次花费{max(0, int(total_tokens))}tokens"
-    combined = f"{base}\n{cost_line}" if base else cost_line
-
-    if len(combined) <= max_chars:
-        return combined
-
-    kept_cost = f"\n{cost_line}"
-    head_limit = max(0, max_chars - len(kept_cost))
-    trimmed = base[:head_limit].rstrip()
-    return f"{trimmed}{kept_cost}" if trimmed else cost_line[:max_chars]
-
 
 def _persist_env_bool(env_file: str, key: str, enabled: bool) -> None:
     path = Path(env_file)
