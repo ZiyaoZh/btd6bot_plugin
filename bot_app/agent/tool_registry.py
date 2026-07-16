@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from ..protocol import CommandResultPayload, EventPayload
 from ..tools import (
     ConcreteTool,
-    ToolRuntime,
+    ToolDependencies,
     build_activity_tools,
     build_general_tools,
+    build_image_tools,
     build_knowledge_tools,
     build_manual_tools,
     build_mini_game_tools,
@@ -21,10 +21,11 @@ from .types import ToolHandler, ToolSpec
 
 
 class ToolRegistry:
-    def __init__(self, runtime: ToolRuntime) -> None:
-        self._runtime = runtime
+    def __init__(self, dependencies: ToolDependencies) -> None:
+        self._dependencies = dependencies
         self._specs: dict[str, ToolSpec] = {}
         self._handlers: dict[str, ToolHandler] = {}
+        self._execution_timeouts: dict[str, float] = {}
         self._register_tools(self._build_tools())
 
     def to_openai_tools(self) -> list[dict[str, Any]]:
@@ -43,6 +44,12 @@ class ToolRegistry:
     def has_tool(self, name: str) -> bool:
         return name in self._handlers
 
+    def get_spec(self, name: str) -> ToolSpec | None:
+        return self._specs.get(name)
+
+    def get_execution_timeout_seconds(self, name: str) -> float | None:
+        return self._execution_timeouts.get(name)
+
     async def execute(
         self, name: str, arguments: dict[str, Any], event: EventPayload
     ) -> CommandResultPayload:
@@ -60,30 +67,38 @@ class ToolRegistry:
 
     def _register_tools(self, tools: list[ConcreteTool]) -> None:
         for tool in tools:
-            self._register(tool.spec, tool.handler)
+            self._register(
+                tool.spec,
+                tool.handler,
+                execution_timeout_seconds=tool.execution_timeout_seconds,
+            )
 
-    def _register(self, spec: ToolSpec, handler: ToolHandler) -> None:
+    def _register(
+        self,
+        spec: ToolSpec,
+        handler: ToolHandler,
+        *,
+        execution_timeout_seconds: float | None = None,
+    ) -> None:
         name = spec["name"]
         if name in self._specs:
             raise ValueError(f"重复工具名: {name}")
         self._specs[name] = spec
         self._handlers[name] = handler
+        if execution_timeout_seconds is not None:
+            self._execution_timeouts[name] = max(
+                0.1,
+                float(execution_timeout_seconds),
+            )
 
     def _build_tools(self) -> list[ConcreteTool]:
         return [
-            *build_general_tools(self._runtime),
-            *build_social_tools(self._runtime),
-            *build_manual_tools(self._runtime),
-            *build_knowledge_tools(self._runtime),
-            *build_activity_tools(self._runtime),
-            *build_mini_game_tools(self._runtime),
-            *build_web_tools(self._runtime),
+            *build_general_tools(self._dependencies),
+            *build_image_tools(self._dependencies),
+            *build_social_tools(self._dependencies),
+            *build_manual_tools(self._dependencies),
+            *build_knowledge_tools(self._dependencies),
+            *build_activity_tools(self._dependencies),
+            *build_mini_game_tools(self._dependencies),
+            *build_web_tools(self._dependencies),
         ]
-
-
-def parse_tool_arguments(raw_arguments: str) -> dict[str, Any]:
-    try:
-        payload = json.loads(raw_arguments or "{}")
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}

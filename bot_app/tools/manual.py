@@ -3,22 +3,22 @@ from __future__ import annotations
 from typing import Any
 
 from ..protocol import CommandResultPayload, EventPayload
-from .base import ConcreteTool, ToolRuntime, object_schema
+from .base import ConcreteTool, ToolDependencies, object_schema
 from .manual_service import build_script_manual_query_result
 
 
-def build_manual_tools(runtime: ToolRuntime) -> list[ConcreteTool]:
+def build_manual_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
     async def script_manual_query(
         arguments: dict[str, Any], event: EventPayload
     ) -> CommandResultPayload:
         result, manual_text = build_script_manual_query_result(
-            manual_file=runtime.manual_file,
-            manual_text_cache=runtime.manual_text_cache,
+            manual_file=dependencies.manual_file,
+            manual_text_cache=dependencies.manual_text_cache,
             event=event,
             arguments=arguments,
             module="tool.manual",
         )
-        runtime.manual_text_cache = manual_text
+        dependencies.manual_text_cache = manual_text
         return result
 
     return [

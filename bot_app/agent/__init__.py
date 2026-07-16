@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from .types import AgentResponse
 
-__all__ = ["AgentResponse", "AgentRunner"]
+__all__ = ["Agent", "AgentResponse", "AgentRunner"]
 
 
 def __getattr__(name: str) -> object:
-    if name == "AgentRunner":
-        from .runner import AgentRunner
+    if name in {"Agent", "AgentRunner"}:
+        from .runner import Agent
 
-        return AgentRunner
+        return Agent
     raise AttributeError(name)

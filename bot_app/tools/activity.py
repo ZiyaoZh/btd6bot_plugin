@@ -8,38 +8,38 @@ from .activity_service import (
     build_activity_leaderboard_result,
     build_collection_event_info_result,
 )
-from .base import ConcreteTool, ToolRuntime, object_schema
+from .base import ConcreteTool, ToolDependencies, object_schema
 
 
-def build_activity_tools(runtime: ToolRuntime) -> list[ConcreteTool]:
+def build_activity_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
     async def get_activity_detail(
         arguments: dict[str, Any], event: EventPayload
     ) -> CommandResultPayload:
         return await build_activity_detail_result(
-            api_processor_root=runtime.api_processor_root,
+            api_processor_root=dependencies.api_processor_root,
             arguments=arguments,
             module="tool.activity",
-            subprocess_runner=runtime.subprocess_runner,
+            subprocess_runner=dependencies.subprocess_runner,
         )
 
     async def get_activity_leaderboard(
         arguments: dict[str, Any], event: EventPayload
     ) -> CommandResultPayload:
         return await build_activity_leaderboard_result(
-            api_processor_root=runtime.api_processor_root,
+            api_processor_root=dependencies.api_processor_root,
             arguments=arguments,
             module="tool.activity",
-            subprocess_runner=runtime.subprocess_runner,
+            subprocess_runner=dependencies.subprocess_runner,
         )
 
     async def get_collection_event_info(
         arguments: dict[str, Any], event: EventPayload
     ) -> CommandResultPayload:
         return await build_collection_event_info_result(
-            api_processor_root=runtime.api_processor_root,
+            api_processor_root=dependencies.api_processor_root,
             arguments=arguments,
             module="tool.activity",
-            subprocess_runner=runtime.subprocess_runner,
+            subprocess_runner=dependencies.subprocess_runner,
         )
 
     return [

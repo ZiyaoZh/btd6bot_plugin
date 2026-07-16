@@ -24,7 +24,6 @@ class AppSettings:
     bot_qq: str = ""
     bot_name: str = "机器人"
     manual_file: str = "manuals/program_manual.md"
-    command_guide_dir: str = "command_skills"
     max_tool_rounds: int = 4
     proactive_chat_enabled: bool = True
     db_file: str = "data/bot_data.db"
@@ -36,6 +35,17 @@ class AppSettings:
     context_compact_api_base_url: str = ""
     context_compact_api_key: str = ""
     recent_group_window_size: int = 10
+    tool_timeout_seconds: float = 30.0
+    max_tool_result_chars: int = 60000
+    run_timeout_seconds: float = 120.0
+    image_gen_api_base_url: str = ""
+    image_gen_api_key: str = ""
+    image_gen_model: str = ""
+    image_gen_request_timeout: float = 180.0
+    image_gen_max_retries: int = 2
+    image_gen_retry_delay_seconds: float = 2.0
+    image_gen_use_proxy: bool = False
+    image_gen_max_bytes: int = 20 * 1024 * 1024
 
 
 def _read_prompt_from_file(path: Path) -> str:
@@ -67,6 +77,17 @@ def _parse_models(raw: str) -> Tuple[str, ...]:
         return ("gpt-4o-mini",)
     # Keep order and remove duplicates.
     return tuple(dict.fromkeys(items))
+
+
+def calculate_image_gen_execution_timeout(
+    request_timeout: float,
+    max_retries: int,
+    retry_delay_seconds: float,
+) -> float:
+    retries = max(0, int(max_retries))
+    attempts = retries + 1
+    retry_wait = max(0.0, float(retry_delay_seconds)) * (2**retries - 1)
+    return attempts * max(1.0, float(request_timeout)) + retry_wait + 10.0
 
 
 def load_settings(env_path: str = ".env") -> AppSettings:
@@ -125,7 +146,6 @@ def load_settings(env_path: str = ".env") -> AppSettings:
     bot_qq = os.getenv("BOT_QQ", "").strip()
     bot_name = os.getenv("BOT_NAME", "机器人").strip() or "机器人"
     manual_file = os.getenv("BOT_MANUAL_FILE", "manuals/program_manual.md").strip() or "manuals/program_manual.md"
-    command_guide_dir = os.getenv("BOT_COMMAND_GUIDE_DIR", "command_skills").strip() or "command_skills"
     max_tool_rounds = int(os.getenv("BOT_MAX_TOOL_ROUNDS", "4"))
     proactive_chat_enabled = os.getenv("BOT_PROACTIVE_CHAT_ENABLED", "true").strip().lower() in {
         "1",
@@ -142,6 +162,39 @@ def load_settings(env_path: str = ".env") -> AppSettings:
     context_compact_api_base_url = os.getenv("LLM_CONTEXT_COMPACT_API_BASE_URL", "").strip()
     context_compact_api_key = os.getenv("LLM_CONTEXT_COMPACT_API_KEY", "").strip()
     recent_group_window_size = int(os.getenv("BOT_RECENT_GROUP_WINDOW_SIZE", "10"))
+    tool_timeout_seconds = float(os.getenv("BOT_TOOL_TIMEOUT_SECONDS", "30"))
+    max_tool_result_chars = int(os.getenv("BOT_MAX_TOOL_RESULT_CHARS", "60000"))
+    run_timeout_seconds = float(os.getenv("BOT_RUN_TIMEOUT_SECONDS", "120"))
+    image_gen_api_base_url = os.getenv("IMAGE_GEN_API_BASE_URL", "").strip().rstrip("/")
+    image_gen_api_key = os.getenv("IMAGE_GEN_API_KEY", "").strip()
+    image_gen_model = os.getenv("IMAGE_GEN_MODEL", "").strip()
+    image_gen_request_timeout = max(
+        1.0,
+        float(os.getenv("IMAGE_GEN_REQUEST_TIMEOUT", "180")),
+    )
+    image_gen_max_retries = max(
+        0,
+        min(5, int(os.getenv("IMAGE_GEN_MAX_RETRIES", "2"))),
+    )
+    image_gen_retry_delay_seconds = max(
+        0.0,
+        min(60.0, float(os.getenv("IMAGE_GEN_RETRY_DELAY_SECONDS", "2"))),
+    )
+    image_gen_use_proxy = os.getenv("IMAGE_GEN_USE_PROXY", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    image_gen_max_bytes = int(os.getenv("IMAGE_GEN_MAX_BYTES", str(20 * 1024 * 1024)))
+
+    if all((image_gen_api_base_url, image_gen_api_key, image_gen_model)):
+        image_execution_timeout = calculate_image_gen_execution_timeout(
+            image_gen_request_timeout,
+            image_gen_max_retries,
+            image_gen_retry_delay_seconds,
+        )
+        run_timeout_seconds = max(run_timeout_seconds, image_execution_timeout + 60.0)
 
     return AppSettings(
         env_file=str(Path(env_path).resolve()),
@@ -160,7 +213,6 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         bot_qq=bot_qq,
         bot_name=bot_name,
         manual_file=manual_file,
-        command_guide_dir=command_guide_dir,
         max_tool_rounds=max(1, max_tool_rounds),
         proactive_chat_enabled=proactive_chat_enabled,
         db_file=db_file,
@@ -172,4 +224,15 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         context_compact_api_base_url=context_compact_api_base_url,
         context_compact_api_key=context_compact_api_key,
         recent_group_window_size=max(1, min(recent_group_window_size, 20)),
+        tool_timeout_seconds=max(0.1, tool_timeout_seconds),
+        max_tool_result_chars=max(1000, max_tool_result_chars),
+        run_timeout_seconds=max(1.0, run_timeout_seconds),
+        image_gen_api_base_url=image_gen_api_base_url,
+        image_gen_api_key=image_gen_api_key,
+        image_gen_model=image_gen_model,
+        image_gen_request_timeout=image_gen_request_timeout,
+        image_gen_max_retries=image_gen_max_retries,
+        image_gen_retry_delay_seconds=image_gen_retry_delay_seconds,
+        image_gen_use_proxy=image_gen_use_proxy,
+        image_gen_max_bytes=max(1024, image_gen_max_bytes),
     )

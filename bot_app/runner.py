@@ -1,275 +1,32 @@
 from __future__ import annotations
 
-import re
-import traceback
 from pathlib import Path
-from uuid import uuid4
 
 from ncatbot.core import BotClient
 from ncatbot.event.qq import GroupMessageEvent
 
-from .db_manager import BotDatabase
-from .llm_client import LLMClient, LLMRequestError
-from .agent import AgentRunner
-from .agent.tool_registry import ToolRegistry
-from .logging_utils import configure_flow_logger, log_flow
-from .memory import GroupChatMemory
-from .receiver import GroupMessageReceiver
-from .sender import MessageSender
+from .bootstrap import build_application
 from .settings import load_settings
-from .tools import ToolRuntime
 
 
 def create_bot() -> BotClient:
     settings = load_settings()
-    configure_flow_logger(settings.flow_log_file)
-    db = BotDatabase(settings.db_file)
-
     bot = BotClient()
-    receiver = GroupMessageReceiver(settings, db=db)
-    sender = MessageSender(bot)
-    memory = GroupChatMemory(history_turns=settings.history_turns)
-    llm = LLMClient(settings=settings)
-    tool_runtime = ToolRuntime.create(
-        db=db,
-        plugin_root=Path(__file__).resolve().parent.parent,
-        manual_file=settings.manual_file,
-        command_guide_dir=settings.command_guide_dir,
-    )
-    agent = AgentRunner(
-        llm=llm,
-        memory=memory,
+    application = build_application(
         settings=settings,
-        tool_registry=ToolRegistry(tool_runtime),
-        tool_runtime=tool_runtime,
+        bot=bot,
+        plugin_root=Path(__file__).resolve().parent.parent,
     )
-    bot_enabled = True
 
     @bot.group_event()
     async def on_group_message(msg: GroupMessageEvent):
-        nonlocal bot_enabled
-        trace_id = uuid4().hex[:12]
-        log_flow(
-            stage="receiver.raw_message",
-            trace_id=trace_id,
-            raw_message=msg.raw_message,
-            group_id=str(msg.group_id),
-            user_id=str(msg.user_id),
-        )
-
-        if receiver.should_track_message(msg):
-            receiver.sync_message_to_db(msg)
-            log_flow(
-                stage="db.synced",
-                trace_id=trace_id,
-                group_id=str(msg.group_id),
-                user_id=str(msg.user_id),
-            )
-
-        if not receiver.should_accept(msg):
-            log_flow(
-                stage="receiver.rejected", trace_id=trace_id, reason="message filtered"
-            )
-            return
-
-        admin_control = receiver.parse_admin_control(msg)
-        if admin_control["matched"]:
-            log_flow(
-                stage="receiver.admin_control", trace_id=trace_id, control=admin_control
-            )
-
-            if not admin_control["authorized"]:
-                await sender.send_group_text(
-                    group_id=str(msg.group_id),
-                    text=f"该指令仅限群主/管理员在带@{settings.bot_name}时使用",
-                    at_user_id=str(msg.user_id),
-                )
-                log_flow(
-                    stage="sender.sent",
-                    trace_id=trace_id,
-                    reply=f"该指令仅限群主/管理员在带@{settings.bot_name}时使用",
-                )
-                return
-
-            if admin_control["action"] == "stop":
-                bot_enabled = False
-                await sender.send_group_text(
-                    group_id=str(msg.group_id),
-                    text="已终止机器人对话处理",
-                    at_user_id=str(msg.user_id),
-                )
-                log_flow(
-                    stage="sender.sent", trace_id=trace_id, reply="已终止机器人对话处理"
-                )
-                return
-
-            if admin_control["action"] == "start":
-                bot_enabled = True
-                await sender.send_group_text(
-                    group_id=str(msg.group_id),
-                    text="已启动机器人对话处理",
-                    at_user_id=str(msg.user_id),
-                )
-                log_flow(
-                    stage="sender.sent", trace_id=trace_id, reply="已启动机器人对话处理"
-                )
-                return
-
-            if admin_control["action"] == "proactive_on":
-                receiver.set_proactive_chat_enabled(True)
-                _persist_env_bool(settings.env_file, "BOT_PROACTIVE_CHAT_ENABLED", True)
-                await sender.send_group_text(
-                    group_id=str(msg.group_id),
-                    text="已开启主动接话",
-                    at_user_id=str(msg.user_id),
-                )
-                log_flow(stage="sender.sent", trace_id=trace_id, reply="已开启主动接话")
-                return
-
-            if admin_control["action"] == "proactive_off":
-                receiver.set_proactive_chat_enabled(False)
-                _persist_env_bool(
-                    settings.env_file, "BOT_PROACTIVE_CHAT_ENABLED", False
-                )
-                await sender.send_group_text(
-                    group_id=str(msg.group_id),
-                    text="已关闭主动接话，仅响应@消息",
-                    at_user_id=str(msg.user_id),
-                )
-                log_flow(
-                    stage="sender.sent",
-                    trace_id=trace_id,
-                    reply="已关闭主动接话，仅响应@消息",
-                )
-                return
-
-        if not bot_enabled:
-            log_flow(
-                stage="receiver.rejected", trace_id=trace_id, reason="bot is stopped"
-            )
-            return
-
-        text = receiver.normalize_text(msg.raw_message or "")
-        if not text:
-            log_flow(
-                stage="receiver.rejected",
-                trace_id=trace_id,
-                reason="empty text after normalize",
-            )
-            return
-
-        if text in {"/reset", "#reset", "重置会话"}:
-            agent.reset_user_context(str(msg.group_id), str(msg.user_id))
-            log_flow(
-                stage="memory.reset",
-                trace_id=trace_id,
-                group_id=str(msg.group_id),
-                user_id=str(msg.user_id),
-            )
-            await sender.send_group_text(
-                group_id=str(msg.group_id),
-                text="你的会话上下文已重置",
-                at_user_id=str(msg.user_id),
-            )
-            log_flow(
-                stage="sender.sent", trace_id=trace_id, reply="你的会话上下文已重置"
-            )
-            return
-
-        event_payload = receiver.build_event_payload(msg, text)
-        log_flow(
-            stage="receiver.event_payload",
-            trace_id=trace_id,
-            event_payload=event_payload,
-        )
-
-        try:
-            agent_response = await agent.run(event_payload, trace_id=trace_id)
-            if not agent_response.should_send:
-                log_flow(stage="agent.noop", trace_id=trace_id)
-                return
-
-            reply_for_memory = agent_response.text
-            final_reply = reply_for_memory[: settings.max_reply_chars]
-            llm.pop_trace_total_tokens(trace_id)
-
-            if agent_response.response_type == "image" and agent_response.image_path:
-                await sender.send_group_image(
-                    group_id=event_payload["group_id"],
-                    image_path=agent_response.image_path,
-                    text=final_reply,
-                    at_user_id=event_payload["user_id"],
-                )
-                log_flow(
-                    stage="sender.sent",
-                    trace_id=trace_id,
-                    reply=final_reply,
-                    image_path=agent_response.image_path,
-                )
-            else:
-                await sender.send_group_text(
-                    group_id=event_payload["group_id"],
-                    text=final_reply,
-                    at_user_id=event_payload["user_id"],
-                )
-                log_flow(stage="sender.sent", trace_id=trace_id, reply=final_reply)
-        except Exception as exc:
-            log_flow(
-                stage="pipeline.error",
-                trace_id=trace_id,
-                error_type=type(exc).__name__,
-                error=str(exc),
-                traceback=traceback.format_exc(),
-            )
-            if isinstance(exc, LLMRequestError):
-                log_flow(
-                    stage="pipeline.silent_drop",
-                    trace_id=trace_id,
-                    reason="llm_request_failed_after_retries",
-                )
-                return
-
-            public_error = f"请求处理失败: {type(exc).__name__}"
-            await sender.send_group_text(
-                group_id=str(msg.group_id),
-                text=public_error,
-                at_user_id=str(msg.user_id),
-            )
-            log_flow(stage="sender.sent", trace_id=trace_id, reply=public_error)
+        await application.handle_group_message(msg)
 
     return bot
 
-def _persist_env_bool(env_file: str, key: str, enabled: bool) -> None:
-    path = Path(env_file)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    value = "true" if enabled else "false"
-
-    if path.exists():
-        lines = path.read_text(encoding="utf-8").splitlines()
-    else:
-        lines = []
-
-    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
-    updated = False
-    new_lines: list[str] = []
-    for line in lines:
-        if pattern.match(line):
-            new_lines.append(f"{key}={value}")
-            updated = True
-        else:
-            new_lines.append(line)
-
-    if not updated:
-        if new_lines and new_lines[-1].strip() != "":
-            new_lines.append("")
-        new_lines.append(f"{key}={value}")
-
-    path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-
 
 def main() -> None:
-    bot = create_bot()
-    bot.run()
+    create_bot().run()
 
 
 if __name__ == "__main__":

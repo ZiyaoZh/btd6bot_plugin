@@ -62,6 +62,14 @@ class BotDatabase:
                     message_count INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(day, group_id, user_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS group_settings (
+                    group_id TEXT NOT NULL,
+                    setting_key TEXT NOT NULL,
+                    setting_value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(group_id, setting_key)
+                );
                 """
             )
             self._ensure_column(
@@ -89,6 +97,43 @@ class BotDatabase:
                 """
             )
             self._conn.commit()
+
+    def set_group_setting(self, group_id: str, key: str, value: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO group_settings (
+                    group_id, setting_key, setting_value, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(group_id, setting_key) DO UPDATE SET
+                    setting_value = excluded.setting_value,
+                    updated_at = excluded.updated_at
+                """,
+                (str(group_id), str(key), str(value), now),
+            )
+            self._conn.commit()
+
+    def get_group_bool_setting(
+        self, group_id: str, key: str, *, default: bool = False
+    ) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT setting_value
+                FROM group_settings
+                WHERE group_id = ? AND setting_key = ?
+                """,
+                (str(group_id), str(key)),
+            ).fetchone()
+        if row is None:
+            return bool(default)
+        return str(row["setting_value"] or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
     def _ensure_column(
         self, cur: sqlite3.Cursor, table: str, column: str, definition: str

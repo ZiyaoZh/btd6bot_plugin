@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
+
 class EventPayload(TypedDict):
     module: str
     event_type: str
@@ -11,15 +12,6 @@ class EventPayload(TypedDict):
     bot_mentioned: bool
     mentioned_qqs: list[str]
     identity: dict[str, Any]
-
-
-class IntentPayload(TypedDict):
-    module: str
-    target: str  # chat | tool_selector | command_processor | noop
-    intent: str
-    arguments: dict[str, Any]
-    reply: str
-    reason: str
 
 
 class _CommandResultPayloadRequired(TypedDict):
@@ -40,5 +32,5 @@ class AdminControlPayload(TypedDict):
     module: str
     matched: bool
     authorized: bool
-    action: str  # start | stop | proactive_on | proactive_off | none
+    action: str  # start | stop | proactive_* | model_turns_* | none
     reason: str

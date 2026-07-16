@@ -3,19 +3,19 @@ from __future__ import annotations
 from typing import Any
 
 from ..protocol import CommandResultPayload, EventPayload
-from .base import ConcreteTool, ToolRuntime, object_schema
+from .base import ConcreteTool, ToolDependencies, object_schema
 from .social_service import (
     build_summarize_recent_messages_result,
     build_today_most_active_result,
 )
 
 
-def build_social_tools(runtime: ToolRuntime) -> list[ConcreteTool]:
+def build_social_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
     async def today_most_active(
         arguments: dict[str, Any], event: EventPayload
     ) -> CommandResultPayload:
         return build_today_most_active_result(
-            db=runtime.db,
+            db=dependencies.db,
             event=event,
             arguments=arguments,
             module="tool.social",
@@ -25,7 +25,7 @@ def build_social_tools(runtime: ToolRuntime) -> list[ConcreteTool]:
         arguments: dict[str, Any], event: EventPayload
     ) -> CommandResultPayload:
         return build_summarize_recent_messages_result(
-            db=runtime.db,
+            db=dependencies.db,
             event=event,
             arguments=arguments,
             module="tool.social",

@@ -1,12 +1,51 @@
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from urllib.error import HTTPError
+
+try:
+    import ncatbot  # noqa: F401
+except ModuleNotFoundError:
+    ncatbot_module = types.ModuleType("ncatbot")
+    event_module = types.ModuleType("ncatbot.event")
+    qq_module = types.ModuleType("ncatbot.event.qq")
+    types_module = types.ModuleType("ncatbot.types")
+
+    class _StubGroupMessageEvent:
+        pass
+
+    class _StubMessageArray:
+        def __init__(self) -> None:
+            self.items: list[tuple[str, str]] = []
+
+        def add_at(self, value: str) -> None:
+            self.items.append(("at", value))
+
+        def add_text(self, value: str) -> None:
+            self.items.append(("text", value))
+
+        def add_image(self, value: str) -> None:
+            self.items.append(("image", value))
+
+    qq_module.GroupMessageEvent = _StubGroupMessageEvent
+    types_module.MessageArray = _StubMessageArray
+    sys.modules.update(
+        {
+            "ncatbot": ncatbot_module,
+            "ncatbot.event": event_module,
+            "ncatbot.event.qq": qq_module,
+            "ncatbot.types": types_module,
+        }
+    )
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT))
@@ -14,31 +53,37 @@ sys.path.insert(0, str(PLUGIN_ROOT))
 from bot_app.agent.runner import AgentRunner  # noqa: E402
 from bot_app.agent.prompt_manager import PromptManager  # noqa: E402
 from bot_app.agent.tool_registry import ToolRegistry  # noqa: E402
-from bot_app.agent.types import ToolCallRecord  # noqa: E402
+from bot_app.agent.types import AgentResponse, ToolCallRecord  # noqa: E402
+from bot_app.application import BotApplication  # noqa: E402
 from bot_app.context_contracts import (  # noqa: E402
     build_user_session_memory_context,
     serialize_session_summary,
 )
-from bot_app.command_processor import CommandProcessor  # noqa: E402
 from bot_app.context_manager import ContextManager  # noqa: E402
 from bot_app.db_manager import BotDatabase  # noqa: E402
 from bot_app.group_context import (  # noqa: E402
     build_message_record_metadata,
     build_recent_group_window,
 )
-from bot_app.llm_client import LLMClient, LLMResponse, LLMToolCall  # noqa: E402
-from bot_app.llm_processor import (  # noqa: E402
-    LLMMessageProcessor,
-    LegacyLLMPipelineDisabled,
+from bot_app.harness.policies import GroundingPolicy  # noqa: E402
+from bot_app.harness.sessions import SessionLockManager  # noqa: E402
+from bot_app.harness.tool_executor import ToolExecutor  # noqa: E402
+from bot_app.harness.types import ModelTurnUpdate, ToolInvocation  # noqa: E402
+from bot_app.llm_client import (  # noqa: E402
+    LLMClient,
+    LLMRequestError,
+    LLMResponse,
+    LLMToolCall,
 )
 from bot_app.memory import GroupChatMemory  # noqa: E402
-from bot_app.protocol import CommandResultPayload, EventPayload, IntentPayload  # noqa: E402
+from bot_app.model.types import ModelToolCall  # noqa: E402
+from bot_app.protocol import CommandResultPayload, EventPayload  # noqa: E402
+from bot_app.receiver import GroupMessageReceiver  # noqa: E402
 from bot_app.sender import MessageSender  # noqa: E402
 from bot_app.settings import AppSettings  # noqa: E402
-from bot_app.tools import ToolRuntime  # noqa: E402
+from bot_app.tools import ToolDependencies  # noqa: E402
 from bot_app.tools.knowledge_service import sanitize_kb_query  # noqa: E402
 from bot_app.tools.web_search_service import parse_duckduckgo_results  # noqa: E402
-from bot_app.tools.features import get_feature_catalog  # noqa: E402
 from bot_app.tools.social_service import build_summarize_recent_messages_result  # noqa: E402
 from bot_app.tools.subprocess_runner import ProcessResult  # noqa: E402
 
@@ -71,32 +116,6 @@ def _event(text: str = "你会什么") -> EventPayload:
             "level": "",
         },
     }
-
-
-class FakeCommandProcessor:
-    def __init__(self) -> None:
-        self.calls: list[IntentPayload] = []
-        self.next_result: CommandResultPayload | None = None
-        self.next_results: list[CommandResultPayload] = []
-
-    async def execute(
-        self, intent: IntentPayload, event: EventPayload
-    ) -> CommandResultPayload:
-        self.calls.append(intent)
-        if self.next_results:
-            return self.next_results.pop(0)
-        if self.next_result is not None:
-            return self.next_result
-        return {
-            "module": "command_processor",
-            "ok": True,
-            "command": intent["intent"],
-            "data": {"called_with": intent["arguments"], "event_text": event["text"]},
-            "message": "工具执行完成",
-            "extra_prompt": "",
-            "response_type": "text",
-            "image_path": "",
-        }
 
 
 class FakeDb:
@@ -237,18 +256,16 @@ class FakeActivityRunner:
 
 
 def _runtime(
-    command_processor: FakeCommandProcessor,
     *,
     db: FakeDb | None = None,
     manual_file: Path | None = None,
     plugin_root: Path = PLUGIN_ROOT,
     subprocess_runner: Any = None,
-) -> ToolRuntime:
-    return ToolRuntime.create(
+) -> ToolDependencies:
+    return ToolDependencies.create(
         db=db or FakeDb(),
         plugin_root=plugin_root,
         manual_file=manual_file or Path("/missing/manual.md"),
-        command_guide_dir=plugin_root / "command_skills",
         subprocess_runner=subprocess_runner,
     )
 
@@ -346,27 +363,435 @@ def _assistant_response(
     )
 
 
-def _planning_response(
-    decision: str,
+def _tool_response(
+    name: str,
+    arguments: dict[str, Any] | None = None,
     *,
-    reason: str = "",
-    draft_reply: str = "",
-    tool_calls: list[dict[str, Any]] | None = None,
+    call_id: str = "call_1",
 ) -> LLMResponse:
     return _assistant_response(
-        json.dumps(
-            {
-                "decision": decision,
-                "reason": reason,
-                "draft_reply": draft_reply,
-                "tool_calls": tool_calls or [],
-            },
-            ensure_ascii=False,
-        )
+        "",
+        [
+            LLMToolCall(
+                id=call_id,
+                name=name,
+                arguments=json.dumps(arguments or {}, ensure_ascii=False),
+            )
+        ],
     )
 
 
 class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_agent_notifies_each_model_turn(self) -> None:
+        updates: list[ModelTurnUpdate] = []
+
+        async def _capture(update: ModelTurnUpdate) -> None:
+            updates.append(update)
+
+        runner = AgentRunner(
+            llm=FakeLLM(
+                [
+                    _tool_response("list_features"),
+                    _assistant_response("功能已列出"),
+                ]
+            ),  # type: ignore[arg-type]
+            memory=GroupChatMemory(history_turns=3),
+            settings=_settings(),
+            tool_registry=ToolRegistry(_runtime()),
+            context_manager=FakeContextManager(),  # type: ignore[arg-type]
+        )
+
+        response = await runner.run(
+            _event(),
+            trace_id="model-turn-notifications",
+            on_model_turn=_capture,
+        )
+
+        self.assertEqual(response.text, "功能已列出")
+        self.assertEqual([update.index for update in updates], [1, 2])
+        self.assertFalse(updates[0].is_final)
+        self.assertEqual(updates[0].tool_calls[0].name, "list_features")
+        self.assertTrue(updates[1].is_final)
+        self.assertEqual(updates[1].content, "功能已列出")
+
+    async def test_application_sends_only_turn_content_then_final_when_enabled(
+        self,
+    ) -> None:
+        sent: list[str] = []
+        committed: list[str] = []
+
+        class _Agent:
+            async def run(self, *args: Any, **kwargs: Any) -> AgentResponse:
+                handler = kwargs["on_model_turn"]
+                if handler is None:
+                    raise AssertionError("model turn handler was not configured")
+                await handler(
+                    ModelTurnUpdate(
+                        index=1,
+                        content="",
+                        tool_calls=(
+                            ModelToolCall(
+                                id="call_empty",
+                                name="search_game_knowledge",
+                                arguments={"query": "功能列表"},
+                            ),
+                        ),
+                        model="fake-model",
+                        is_final=False,
+                    )
+                )
+                await handler(
+                    ModelTurnUpdate(
+                        index=2,
+                        content="我先查询功能列表。",
+                        tool_calls=(
+                            ModelToolCall(
+                                id="call_1",
+                                name="list_features",
+                                arguments={},
+                            ),
+                        ),
+                        model="fake-model",
+                        is_final=False,
+                    )
+                )
+                await handler(
+                    ModelTurnUpdate(
+                        index=3,
+                        content="功能已列出",
+                        model="fake-model",
+                        is_final=True,
+                    )
+                )
+                return AgentResponse(text="功能已列出")
+
+            async def commit_turn(self, *args: Any, **kwargs: Any) -> None:
+                committed.append("committed")
+
+        class _Sender:
+            async def send_group_text(self, **kwargs: Any) -> None:
+                sent.append(kwargs["text"])
+
+            async def send_group_image(self, **kwargs: Any) -> None:
+                raise AssertionError("unexpected image")
+
+        class _Usage:
+            def pop_trace_total_tokens(self, trace_id: str) -> int:
+                return 34
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = BotDatabase(str(Path(temp_dir) / "bot.db"))
+            database.set_group_setting(
+                "1000", "model_turn_messages_enabled", "true"
+            )
+            application = BotApplication(
+                settings=_settings(),
+                receiver=object(),  # type: ignore[arg-type]
+                sender=_Sender(),  # type: ignore[arg-type]
+                agent=_Agent(),  # type: ignore[arg-type]
+                llm=_Usage(),  # type: ignore[arg-type]
+                database=database,
+            )
+
+            await application.process_event(
+                event=_event(),
+                trace_id="process-messages",
+                reply_group_id="1000",
+                at_user_id="2000",
+                send_failure_notice=True,
+            )
+
+        self.assertEqual(
+            sent,
+            ["我先查询功能列表。", "功能已列出"],
+        )
+        self.assertEqual(committed, ["committed"])
+
+    async def test_admin_model_turn_command_is_persisted_per_group(self) -> None:
+        sent: list[str] = []
+
+        class _Sender:
+            async def send_group_text(self, **kwargs: Any) -> None:
+                sent.append(kwargs["text"])
+
+        class _Usage:
+            def pop_trace_total_tokens(self, trace_id: str) -> int:
+                return 0
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = BotDatabase(str(Path(temp_dir) / "bot.db"))
+            receiver = GroupMessageReceiver(_settings(), db=database)
+            application = BotApplication(
+                settings=_settings(),
+                receiver=receiver,
+                sender=_Sender(),  # type: ignore[arg-type]
+                agent=object(),  # type: ignore[arg-type]
+                llm=_Usage(),  # type: ignore[arg-type]
+                database=database,
+            )
+            msg = types.SimpleNamespace(
+                group_id="1000",
+                user_id="2000",
+                raw_message="@机器人 开启模型过程",
+                sender=types.SimpleNamespace(role="admin"),
+            )
+
+            handled = await application._handle_admin_control(
+                msg, trace_id="model-turns-on"
+            )
+
+            self.assertTrue(handled)
+            self.assertTrue(
+                database.get_group_bool_setting(
+                    "1000", "model_turn_messages_enabled"
+                )
+            )
+            self.assertFalse(
+                database.get_group_bool_setting(
+                    "another-group", "model_turn_messages_enabled"
+                )
+            )
+
+            msg.raw_message = "@机器人 关闭模型过程"
+            await application._handle_admin_control(msg, trace_id="model-turns-off")
+
+            self.assertFalse(
+                database.get_group_bool_setting(
+                    "1000", "model_turn_messages_enabled"
+                )
+            )
+
+        self.assertEqual(
+            sent,
+            ["已开启本群模型过程消息", "已关闭本群模型过程消息，仅发送最终结果"],
+        )
+
+    async def test_tool_executor_rejects_invalid_schema_before_handler(self) -> None:
+        registry = ToolRegistry(_runtime())
+        executor = ToolExecutor(registry)
+
+        result = await executor.execute(
+            ToolInvocation(
+                id="call_invalid",
+                name="list_features",
+                arguments={"unexpected": True},
+            ),
+            _event(),
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("validation_errors", result["data"])
+        self.assertIn("not allowed", result["data"]["validation_errors"][0])
+
+    async def test_tool_executor_normalizes_timeout(self) -> None:
+        registry = ToolRegistry(_runtime())
+        executor = ToolExecutor(registry, timeout_seconds=0.01)
+
+        async def _slow_execute(*args: Any, **kwargs: Any) -> CommandResultPayload:
+            await asyncio.sleep(1)
+            raise AssertionError("unreachable")
+
+        with patch.object(registry, "execute", side_effect=_slow_execute):
+            result = await executor.execute(
+                ToolInvocation(id="call_slow", name="list_features", arguments={}),
+                _event(),
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("超时", result["message"])
+
+    async def test_tool_executor_enforces_observation_size_limit(self) -> None:
+        registry = ToolRegistry(_runtime())
+        executor = ToolExecutor(registry, max_result_chars=1000)
+
+        async def _large_result(*args: Any, **kwargs: Any) -> CommandResultPayload:
+            return {
+                "module": "test",
+                "ok": True,
+                "command": "list_features",
+                "data": {"rows": ["x" * 1000 for _ in range(100)]},
+                "message": "done",
+                "extra_prompt": "",
+                "response_type": "text",
+                "image_path": "",
+            }
+
+        with patch.object(registry, "execute", side_effect=_large_result):
+            result = await executor.execute(
+                ToolInvocation(id="call_large", name="list_features", arguments={}),
+                _event(),
+            )
+
+        self.assertLessEqual(len(json.dumps(result, ensure_ascii=False)), 1000)
+        self.assertTrue(result["data"]["result_truncated"])
+
+    async def test_session_lock_serializes_same_session(self) -> None:
+        sessions = SessionLockManager()
+        active = 0
+        max_active = 0
+
+        async def _work() -> None:
+            nonlocal active, max_active
+            async with sessions.hold("1000:2000"):
+                active += 1
+                max_active = max(max_active, active)
+                await asyncio.sleep(0.01)
+                active -= 1
+
+        await asyncio.gather(_work(), _work(), _work())
+
+        self.assertEqual(max_active, 1)
+
+    def test_grounding_policy_avoids_generic_can_you_false_positive(self) -> None:
+        policy = GroundingPolicy()
+
+        self.assertFalse(policy.is_knowledge_query("你能不能先别回复我"))
+        self.assertTrue(policy.is_knowledge_query("DDT 数据和机制是什么"))
+
+    async def test_application_does_not_commit_when_delivery_fails(self) -> None:
+        calls: list[str] = []
+
+        class _Agent:
+            async def run(self, *args: Any, **kwargs: Any) -> AgentResponse:
+                calls.append("generated")
+                self.assert_commit_deferred = kwargs["commit"] is False
+                return AgentResponse(text="reply")
+
+            async def commit_turn(self, *args: Any, **kwargs: Any) -> None:
+                calls.append("committed")
+
+        class _Sender:
+            async def send_group_text(self, **kwargs: Any) -> None:
+                calls.append("delivery_failed")
+                raise RuntimeError("send failed")
+
+            async def send_group_image(self, **kwargs: Any) -> None:
+                raise AssertionError("unexpected image")
+
+        class _Usage:
+            def pop_trace_total_tokens(self, trace_id: str) -> int:
+                calls.append("usage_finalized")
+                return 17
+
+        agent = _Agent()
+        application = BotApplication(
+            settings=_settings(),
+            receiver=object(),  # type: ignore[arg-type]
+            sender=_Sender(),  # type: ignore[arg-type]
+            agent=agent,  # type: ignore[arg-type]
+            llm=_Usage(),  # type: ignore[arg-type]
+        )
+
+        await application.process_event(
+            event=_event(),
+            trace_id="delivery-failure",
+            reply_group_id="1000",
+            at_user_id="2000",
+            send_failure_notice=False,
+        )
+
+        self.assertTrue(agent.assert_commit_deferred)
+        self.assertEqual(calls, ["generated", "delivery_failed", "usage_finalized"])
+
+    async def test_application_commits_only_after_successful_delivery(self) -> None:
+        calls: list[str] = []
+
+        class _Agent:
+            async def run(self, *args: Any, **kwargs: Any) -> AgentResponse:
+                calls.append("generated")
+                return AgentResponse(text="reply")
+
+            async def commit_turn(self, *args: Any, **kwargs: Any) -> None:
+                calls.append("committed")
+
+        class _Sender:
+            async def send_group_text(self, **kwargs: Any) -> None:
+                calls.append("delivered")
+
+            async def send_group_image(self, **kwargs: Any) -> None:
+                raise AssertionError("unexpected image")
+
+        class _Usage:
+            def pop_trace_total_tokens(self, trace_id: str) -> int:
+                calls.append("usage_finalized")
+                return 17
+
+        application = BotApplication(
+            settings=_settings(),
+            receiver=object(),  # type: ignore[arg-type]
+            sender=_Sender(),  # type: ignore[arg-type]
+            agent=_Agent(),  # type: ignore[arg-type]
+            llm=_Usage(),  # type: ignore[arg-type]
+        )
+
+        await application.process_event(
+            event=_event(),
+            trace_id="delivery-success",
+            reply_group_id="1000",
+            at_user_id="2000",
+            send_failure_notice=True,
+        )
+
+        self.assertEqual(
+            calls, ["generated", "delivered", "committed", "usage_finalized"]
+        )
+
+    async def test_malformed_native_tool_arguments_are_not_executed(self) -> None:
+        registry = ToolRegistry(_runtime())
+        llm = FakeLLM(
+            [
+                _assistant_response(
+                    "",
+                    [
+                        LLMToolCall(
+                            id="call_bad_json",
+                            name="list_features",
+                            arguments="{not-json",
+                        )
+                    ],
+                ),
+                _assistant_response("工具参数有误，请重试。"),
+            ]
+        )
+        runner = AgentRunner(
+            llm=llm,  # type: ignore[arg-type]
+            memory=GroupChatMemory(history_turns=3),
+            settings=_settings(),
+            tool_registry=registry,
+            context_manager=FakeContextManager(),  # type: ignore[arg-type]
+        )
+
+        response = await runner.run(_event(), trace_id="bad-arguments")
+
+        self.assertEqual(response.text, "工具参数有误，请重试。")
+        self.assertFalse(response.tool_calls[0].result["ok"])
+        self.assertIn(
+            "invalid JSON",
+            response.tool_calls[0].result["data"]["validation_errors"][0],
+        )
+
+    async def test_harness_stops_before_executing_tool_over_budget(self) -> None:
+        settings = AppSettings(**{**_settings().__dict__, "max_tool_rounds": 1})
+        llm = FakeLLM(
+            [
+                _tool_response("list_features", call_id="call_1"),
+                _tool_response("list_features", call_id="call_2"),
+            ]
+        )
+        runner = AgentRunner(
+            llm=llm,  # type: ignore[arg-type]
+            memory=GroupChatMemory(history_turns=3),
+            settings=settings,
+            tool_registry=ToolRegistry(_runtime()),
+            context_manager=FakeContextManager(),  # type: ignore[arg-type]
+        )
+
+        response = await runner.run(_event(), trace_id="budget")
+
+        self.assertEqual(response.terminal_reason, "tool_budget_exhausted")
+        self.assertEqual(len(response.tool_calls), 1)
+        self.assertEqual(response.tool_calls[0].call_id, "call_1")
+
     def test_sanitize_kb_query_strips_invocation_noise_and_rewrites_domain_terms(
         self,
     ) -> None:
@@ -376,12 +801,12 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             sanitize_kb_query("[CQ:at,qq=1693903050] 004野兽之主能不能抓DDT"),
-            "004 0-0-4 野兽之主 DDT",
+            "004 0-0-4 野兽之主 DDT 逆戟鲸",
         )
-        self.assertIn("下路", sanitize_kb_query("野兽之主路线3详细数据"))
+        self.assertEqual(sanitize_kb_query("野兽之主路线3详细数据"), "野兽之主")
         self.assertEqual(
             sanitize_kb_query("野兽之主下路详细数据"),
-            "野兽之主 下路",
+            "野兽之主",
         )
         self.assertEqual(
             sanitize_kb_query("Mermaid Monkey stats"),
@@ -389,7 +814,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             sanitize_kb_query("Beast Handler 004 DDT"),
-            "野兽之主 004 0-0-4 DDT",
+            "野兽之主 004 0-0-4 DDT 逆戟鲸",
         )
         self.assertIn("能量", sanitize_kb_query("能量图腾数据"))
 
@@ -412,8 +837,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(snippet), 300)
 
     def test_tool_registry_loads_concrete_tool_modules(self) -> None:
-        command_processor = FakeCommandProcessor()
-        registry = ToolRegistry(_runtime(command_processor))
+        registry = ToolRegistry(_runtime())
 
         tool_names = {tool["function"]["name"] for tool in registry.to_openai_tools()}
 
@@ -422,6 +846,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             {
                 "ignore_message",
                 "list_features",
+                "generate_image",
                 "today_most_active",
                 "summarize_recent_messages",
                 "script_manual_query",
@@ -441,10 +866,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             json.dumps(function["parameters"])
             self.assertFalse(function["parameters"].get("additionalProperties", True))
 
-    async def test_concrete_social_tool_handler_uses_runtime_db(self) -> None:
-        command_processor = FakeCommandProcessor()
+    async def test_concrete_social_tool_handler_uses_injected_db(self) -> None:
         db = FakeDb()
-        registry = ToolRegistry(_runtime(command_processor, db=db))
+        registry = ToolRegistry(_runtime(db=db))
 
         result = await registry.execute(
             "today_most_active",
@@ -454,16 +878,12 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["data"]["rows"], db.active_rows)
-        self.assertEqual(command_processor.calls, [])
 
-    async def test_concrete_manual_tool_reads_runtime_manual_file(self) -> None:
-        command_processor = FakeCommandProcessor()
+    async def test_concrete_manual_tool_reads_injected_manual_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manual_path = Path(temp_dir) / "manual.md"
             manual_path.write_text("启动方式：运行 main.py", encoding="utf-8")
-            registry = ToolRegistry(
-                _runtime(command_processor, manual_file=manual_path)
-            )
+            registry = ToolRegistry(_runtime(manual_file=manual_path))
 
             result = await registry.execute(
                 "script_manual_query",
@@ -473,10 +893,8 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["data"]["manual_full_text"], "启动方式：运行 main.py")
-        self.assertEqual(command_processor.calls, [])
 
     async def test_tool_results_follow_contract(self) -> None:
-        command_processor = FakeCommandProcessor()
         activity_runner = FakeActivityRunner()
         required_fields = {
             "module",
@@ -491,42 +909,29 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             registry = ToolRegistry(
                 _runtime(
-                    command_processor,
                     plugin_root=_create_temp_plugin_root(temp_dir),
                     subprocess_runner=activity_runner,
                 )
             )
             cases = [
-                ("ignore_message", {"reason": "test"}, False),
-                ("list_features", {}, False),
-                ("today_most_active", {"top_n": 3}, False),
-                ("summarize_recent_messages", {"top_n": 5}, False),
-                ("script_manual_query", {"query": "怎么启动"}, False),
-                ("search_game_knowledge", {"query": "忍者猴"}, False),
-                ("read_game_knowledge_file", {"file_path": "a.md"}, False),
-                ("get_activity_detail", {"activity_type": "race"}, False),
-                ("get_activity_leaderboard", {"leaderboard_type": "race"}, False),
-                ("get_collection_event_info", {"only_upcoming": True}, False),
-                ("search_web", {}, False),
+                ("ignore_message", {"reason": "test"}),
+                ("list_features", {}),
+                ("today_most_active", {"top_n": 3}),
+                ("summarize_recent_messages", {"top_n": 5}),
+                ("script_manual_query", {"query": "怎么启动"}),
+                ("search_game_knowledge", {"query": "忍者猴"}),
+                ("read_game_knowledge_file", {"file_path": "a.md"}),
+                ("get_activity_detail", {"activity_type": "race"}),
+                ("get_activity_leaderboard", {"leaderboard_type": "race"}),
+                ("get_collection_event_info", {"only_upcoming": True}),
+                ("search_web", {}),
                 (
                     "simulate_monkey_box_opening",
                     {"box_type": "钻石", "box_count": 1},
-                    False,
                 ),
             ]
 
-            for name, arguments, is_forwarded in cases:
-                if is_forwarded:
-                    command_processor.next_results.append(
-                        {
-                            "module": "legacy",
-                            "ok": True,
-                            "command": name,
-                            "data": {"arguments": arguments},
-                            "message": "legacy ok",
-                            "extra_prompt": "",
-                        }  # type: ignore[typeddict-item]
-                    )
+            for name, arguments in cases:
                 result = await registry.execute(name, arguments, _event())
 
                 self.assertTrue(required_fields.issubset(result.keys()), name)
@@ -538,14 +943,12 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(required_fields.issubset(unknown.keys()))
         self.assertFalse(unknown["ok"])
 
-    async def test_mini_game_tool_uses_runtime_runner(self) -> None:
-        command_processor = FakeCommandProcessor()
+    async def test_mini_game_tool_uses_injected_process_runner(self) -> None:
         fake_runner = FakeActivityRunner()
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin_root = _create_temp_plugin_root(temp_dir)
             registry = ToolRegistry(
                 _runtime(
-                    command_processor,
                     plugin_root=plugin_root,
                     subprocess_runner=fake_runner,
                 )
@@ -574,17 +977,13 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text_result["response_type"], "text")
         self.assertEqual(text_result["image_path"], "")
         self.assertFalse(rejected_result["ok"])
-        self.assertEqual(command_processor.calls, [])
         self.assertEqual(len(fake_runner.calls), 2)
 
-    async def test_knowledge_tools_use_runtime_kb_root(self) -> None:
-        command_processor = FakeCommandProcessor()
+    async def test_knowledge_tools_use_injected_kb_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin_root = _create_temp_plugin_root(temp_dir)
             kb_root = _create_fake_knowledge_base(plugin_root)
-            registry = ToolRegistry(
-                _runtime(command_processor, plugin_root=plugin_root)
-            )
+            registry = ToolRegistry(_runtime(plugin_root=plugin_root))
 
             search_result = await registry.execute(
                 "search_game_knowledge",
@@ -635,10 +1034,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("大师忍者", read_result["data"]["content"])
         self.assertGreater(read_result["data"]["content_chars"], 0)
         self.assertTrue(long_result["ok"])
-        self.assertEqual(long_result["data"]["mode"], "extract")
+        self.assertEqual(long_result["data"]["mode"], "keyword_extract")
         self.assertGreater(long_result["data"]["content_chars"], 0)
         self.assertFalse(rejected_result["ok"])
-        self.assertEqual(command_processor.calls, [])
         self.assertNotIn(str(kb_root.resolve()), sys.path)
 
     def test_parse_duckduckgo_results_extracts_public_result_fields(self) -> None:
@@ -696,8 +1094,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             def raise_for_status(self) -> None:
                 return None
 
-        command_processor = FakeCommandProcessor()
-        registry = ToolRegistry(_runtime(command_processor))
+        registry = ToolRegistry(_runtime())
         with patch(
             "bot_app.tools.web_search_service.requests.post",
             return_value=FakeSearchResponse(),
@@ -716,14 +1113,13 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("法律", result["extra_prompt"])
         self.assertIn("违法违规", result["extra_prompt"])
         fake_get.assert_called_once()
-        self.assertEqual(command_processor.calls, [])
 
     def test_build_knowledge_summary_marks_grounded_read(self) -> None:
         runner = AgentRunner(
             llm=FakeLLM([]),  # type: ignore[arg-type]
             memory=GroupChatMemory(history_turns=3),
             settings=_settings(),
-            tool_registry=ToolRegistry(_runtime(FakeCommandProcessor())),
+            tool_registry=ToolRegistry(_runtime()),
             context_manager=FakeContextManager(),  # type: ignore[arg-type]
         )
         tool_records = [
@@ -782,27 +1178,11 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["content_chars"], 8)
 
     async def test_runner_logs_knowledge_summary_after_forced_read(self) -> None:
-        command_processor = FakeCommandProcessor()
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin_root = _create_temp_plugin_root(temp_dir)
             _create_fake_knowledge_base(plugin_root)
-            registry = ToolRegistry(_runtime(command_processor, plugin_root=plugin_root))
-            llm = FakeLLM(
-                [
-                    _planning_response(
-                        "call_tools",
-                        tool_calls=[
-                            {
-                                "name": "search_game_knowledge",
-                                "arguments": {"query": "忍者猴机制"},
-                            }
-                        ],
-                    ),
-                    _planning_response("final", reason="搜索结果已足够"),
-                    _planning_response("final", reason="读取结果已足够"),
-                    _assistant_response("忍者猴可以升级为大师忍者"),
-                ]
-            )
+            registry = ToolRegistry(_runtime(plugin_root=plugin_root))
+            llm = FakeLLM([_assistant_response("忍者猴可以升级为大师忍者")])
             runner = AgentRunner(
                 llm=llm,  # type: ignore[arg-type]
                 memory=GroupChatMemory(history_turns=3),
@@ -832,34 +1212,21 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(summary["answer_grounded"])
         self.assertEqual(summary["fallback_reason"], "")
 
-    async def test_agent_forces_search_for_knowledge_query_when_model_returns_invalid_category_tool(self) -> None:
-        command_processor = FakeCommandProcessor()
+    async def test_agent_forces_grounding_before_model_for_knowledge_query(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin_root = _create_temp_plugin_root(temp_dir)
             _create_fake_knowledge_base(plugin_root)
-            runtime = _runtime(command_processor, plugin_root=plugin_root, db=FakeDb())
-            registry = ToolRegistry(runtime)
-            llm = FakeLLM(
-                [
-                    _planning_response(
-                        "call_tools",
-                        tool_calls=[
-                            {
-                                "name": "game_knowledge",
-                                "arguments": {"query": "野兽之主数据"},
-                            }
-                        ],
-                    ),
-                    _planning_response("final", reason="已拿到检索结果"),
-                    _assistant_response("野兽之主的资料已基于知识库读取。"),
-                ]
-            )
+            dependencies = _runtime(plugin_root=plugin_root, db=FakeDb())
+            registry = ToolRegistry(dependencies)
+            llm = FakeLLM([_assistant_response("野兽之主的资料已基于知识库读取。")])
             runner = AgentRunner(
                 llm=llm,  # type: ignore[arg-type]
                 memory=GroupChatMemory(history_turns=3),
                 settings=_settings(),
                 tool_registry=registry,
-                tool_runtime=runtime,
+                tool_dependencies=dependencies,
                 context_manager=FakeContextManager(),  # type: ignore[arg-type]
             )
 
@@ -869,36 +1236,45 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(response.tool_calls), 2)
         self.assertEqual(response.tool_calls[0].name, "search_game_knowledge")
         self.assertEqual(response.tool_calls[1].name, "read_game_knowledge_file")
+        self.assertEqual(response.tool_calls[0].source, "policy")
+        self.assertEqual(len(llm.requests), 1)
+        request_messages = llm.requests[0]["messages"]
+        self.assertFalse(
+            any(
+                message.get("role") in {"assistant", "tool"}
+                for message in request_messages
+            )
+        )
+        policy_observations = []
+        for message in request_messages:
+            if message.get("role") != "user":
+                continue
+            payload = json.loads(message["content"])
+            if payload.get("kind") == "harness_tool_observations":
+                policy_observations.append(payload)
+        self.assertEqual(len(policy_observations), 2)
+        self.assertEqual(
+            policy_observations[0]["results"][0]["name"],
+            "search_game_knowledge",
+        )
+        self.assertEqual(
+            policy_observations[1]["results"][0]["name"],
+            "read_game_knowledge_file",
+        )
 
     async def test_agent_forces_read_after_search_hit_for_knowledge_query(self) -> None:
-        command_processor = FakeCommandProcessor()
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin_root = _create_temp_plugin_root(temp_dir)
             _create_fake_knowledge_base(plugin_root)
-            runtime = _runtime(command_processor, plugin_root=plugin_root, db=FakeDb())
-            registry = ToolRegistry(runtime)
-            llm = FakeLLM(
-                [
-                    _planning_response(
-                        "call_tools",
-                        tool_calls=[
-                            {
-                                "name": "search_game_knowledge",
-                                "arguments": {"query": "人鱼猴数据"},
-                            }
-                        ],
-                    ),
-                    _planning_response("final", reason="搜到候选页了"),
-                    _planning_response("final", reason="读完文件可以回答"),
-                    _assistant_response("人鱼猴的数据如下"),
-                ]
-            )
+            dependencies = _runtime(plugin_root=plugin_root, db=FakeDb())
+            registry = ToolRegistry(dependencies)
+            llm = FakeLLM([_assistant_response("人鱼猴的数据如下")])
             runner = AgentRunner(
                 llm=llm,  # type: ignore[arg-type]
                 memory=GroupChatMemory(history_turns=3),
                 settings=_settings(),
                 tool_registry=registry,
-                tool_runtime=runtime,
+                tool_dependencies=dependencies,
                 context_manager=FakeContextManager(),  # type: ignore[arg-type]
             )
 
@@ -910,32 +1286,18 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.tool_calls[1].name, "read_game_knowledge_file")
 
     async def test_agent_uses_deterministic_fallback_after_knowledge_miss(self) -> None:
-        command_processor = FakeCommandProcessor()
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin_root = _create_temp_plugin_root(temp_dir)
             _create_empty_fake_knowledge_base(plugin_root)
-            runtime = _runtime(command_processor, plugin_root=plugin_root, db=FakeDb())
-            registry = ToolRegistry(runtime)
-            llm = FakeLLM(
-                [
-                    _planning_response(
-                        "call_tools",
-                        tool_calls=[
-                            {
-                                "name": "search_game_knowledge",
-                                "arguments": {"query": "不存在塔数据"},
-                            }
-                        ],
-                    ),
-                    _planning_response("final", reason="知识库未命中"),
-                ]
-            )
+            dependencies = _runtime(plugin_root=plugin_root, db=FakeDb())
+            registry = ToolRegistry(dependencies)
+            llm = FakeLLM([_assistant_response("我印象里它可能存在。")])
             runner = AgentRunner(
                 llm=llm,  # type: ignore[arg-type]
                 memory=GroupChatMemory(history_turns=3),
                 settings=_settings(),
                 tool_registry=registry,
-                tool_runtime=runtime,
+                tool_dependencies=dependencies,
                 context_manager=FakeContextManager(),  # type: ignore[arg-type]
             )
 
@@ -946,7 +1308,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(response.tool_calls), 1)
         self.assertEqual(
             [request["purpose"] for request in llm.requests],
-            ["agent_planning", "agent_planning"],
+            ["agent_turn"],
         )
 
     async def test_agent_can_use_web_search_after_knowledge_miss(self) -> None:
@@ -965,29 +1327,17 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             def raise_for_status(self) -> None:
                 return None
 
-        command_processor = FakeCommandProcessor()
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin_root = _create_temp_plugin_root(temp_dir)
             _create_empty_fake_knowledge_base(plugin_root)
-            runtime = _runtime(command_processor, plugin_root=plugin_root, db=FakeDb())
-            registry = ToolRegistry(runtime)
+            dependencies = _runtime(plugin_root=plugin_root, db=FakeDb())
+            registry = ToolRegistry(dependencies)
             llm = FakeLLM(
                 [
-                    _planning_response("final", reason="先让硬规则检索知识库"),
-                    _planning_response(
-                        "call_tools",
-                        reason="知识库未命中，改用联网搜索",
-                        tool_calls=[
-                            {
-                                "name": "search_web",
-                                "arguments": {
-                                    "query": "BTD6 DDT counter guide",
-                                    "top_n": 3,
-                                },
-                            }
-                        ],
+                    _tool_response(
+                        "search_web",
+                        {"query": "BTD6 DDT counter guide", "top_n": 3},
                     ),
-                    _planning_response("final", reason="联网结果足够回答"),
                     _assistant_response("联网资料显示，DDT 需要迷彩侦测和破铅伤害。"),
                 ]
             )
@@ -996,7 +1346,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                 memory=GroupChatMemory(history_turns=3),
                 settings=_settings(),
                 tool_registry=registry,
-                tool_runtime=runtime,
+                tool_dependencies=dependencies,
                 context_manager=FakeContextManager(),  # type: ignore[arg-type]
             )
 
@@ -1016,10 +1366,8 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [request["purpose"] for request in llm.requests],
             [
-                "agent_planning",
-                "agent_planning",
-                "agent_planning",
-                "agent_rendering",
+                "agent_turn",
+                "agent_turn",
             ],
         )
         fake_get.assert_called_once()
@@ -1027,155 +1375,49 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
     async def test_agent_uses_deterministic_fallback_after_knowledge_read_failure(
         self,
     ) -> None:
-        command_processor = FakeCommandProcessor()
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin_root = _create_temp_plugin_root(temp_dir)
             _create_fake_knowledge_base(plugin_root)
-            runtime = _runtime(command_processor, plugin_root=plugin_root, db=FakeDb())
-            registry = ToolRegistry(runtime)
-            llm = FakeLLM(
-                [
-                    _planning_response(
-                        "call_tools",
-                        tool_calls=[
-                            {
-                                "name": "search_game_knowledge",
-                                "arguments": {"query": "人鱼猴数据"},
-                            },
-                            {
-                                "name": "read_game_knowledge_file",
-                                "arguments": {"file_path": "/outside.md"},
-                            },
-                        ],
-                    ),
-                    _planning_response("final", reason="读取失败但尝试回答"),
-                ]
-            )
+            dependencies = _runtime(plugin_root=plugin_root, db=FakeDb())
+            registry = ToolRegistry(dependencies)
+            llm = FakeLLM([_assistant_response("我尝试根据印象回答。")])
             runner = AgentRunner(
                 llm=llm,  # type: ignore[arg-type]
                 memory=GroupChatMemory(history_turns=3),
                 settings=_settings(),
                 tool_registry=registry,
-                tool_runtime=runtime,
+                tool_dependencies=dependencies,
                 context_manager=FakeContextManager(),  # type: ignore[arg-type]
             )
 
-            response = await runner.run(_event("人鱼猴数据"), trace_id="test-trace")
+            original_execute = registry.execute
+
+            async def _execute_with_read_failure(
+                name: str, arguments: dict[str, Any], event: EventPayload
+            ) -> CommandResultPayload:
+                if name == "read_game_knowledge_file":
+                    return {
+                        "module": "tool.knowledge",
+                        "ok": False,
+                        "command": name,
+                        "data": {"file_path": arguments.get("file_path", "")},
+                        "message": "读取失败",
+                        "extra_prompt": "",
+                        "response_type": "text",
+                        "image_path": "",
+                    }
+                return await original_execute(name, arguments, event)
+
+            with patch.object(
+                registry, "execute", side_effect=_execute_with_read_failure
+            ):
+                response = await runner.run(_event("人鱼猴数据"), trace_id="test-trace")
 
         self.assertIn("没有成功读取到可用内容", response.text)
         self.assertEqual(len(response.tool_calls), 2)
         self.assertEqual(
             [request["purpose"] for request in llm.requests],
-            ["agent_planning", "agent_planning"],
-        )
-
-    async def test_legacy_command_processor_list_features_uses_shared_catalog(
-        self,
-    ) -> None:
-        command_processor = CommandProcessor(
-            db=FakeDb(),  # type: ignore[arg-type]
-            manual_file=Path("/missing/manual.md"),
-            command_guide_dir=PLUGIN_ROOT / "command_skills",
-        )
-
-        result = await command_processor.execute(
-            {
-                "module": "test",
-                "target": "command_processor",
-                "intent": "list_features",
-                "arguments": {},
-                "reply": "",
-                "reason": "test",
-            },
-            _event(),
-        )
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["data"]["features"], get_feature_catalog())
-
-    async def test_legacy_command_processor_view_command_guide_uses_service(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            guide_dir = Path(temp_dir) / "command_skills"
-            guide_dir.mkdir()
-            (guide_dir / "script_manual_query.md").write_text(
-                "说明书查询指南", encoding="utf-8"
-            )
-            command_processor = CommandProcessor(
-                db=FakeDb(),  # type: ignore[arg-type]
-                manual_file=Path("/missing/manual.md"),
-                command_guide_dir=guide_dir,
-            )
-
-            result = await command_processor.execute(
-                {
-                    "module": "test",
-                    "target": "command_processor",
-                    "intent": "view_command_guide",
-                    "arguments": {"command": "script_manual_query"},
-                    "reply": "",
-                    "reason": "test",
-                },
-                _event(),
-            )
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["data"]["guide_text"], "说明书查询指南")
-
-    async def test_legacy_command_processor_uses_shared_social_and_manual_services(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manual_path = Path(temp_dir) / "manual.md"
-            manual_path.write_text("启动方式：运行 main.py", encoding="utf-8")
-            command_processor = CommandProcessor(
-                db=FakeDb(),  # type: ignore[arg-type]
-                manual_file=manual_path,
-                command_guide_dir=PLUGIN_ROOT / "command_skills",
-            )
-
-            active_result = await command_processor.execute(
-                {
-                    "module": "test",
-                    "target": "command_processor",
-                    "intent": "today_most_active",
-                    "arguments": {"top_n": 5},
-                    "reply": "",
-                    "reason": "test",
-                },
-                _event("今日活跃榜前5"),
-            )
-            summary_result = await command_processor.execute(
-                {
-                    "module": "test",
-                    "target": "command_processor",
-                    "intent": "summarize_recent_messages",
-                    "arguments": {"top_n": 5},
-                    "reply": "",
-                    "reason": "test",
-                },
-                _event("总结最近消息"),
-            )
-            manual_result = await command_processor.execute(
-                {
-                    "module": "test",
-                    "target": "command_processor",
-                    "intent": "script_manual_query",
-                    "arguments": {"query": "怎么启动"},
-                    "reply": "",
-                    "reason": "test",
-                },
-                _event("怎么启动脚本"),
-            )
-
-        self.assertEqual(active_result["module"], "command_processor")
-        self.assertEqual(active_result["data"]["rows"][0]["nickname"], "A")
-        self.assertEqual(summary_result["module"], "command_processor")
-        self.assertEqual(summary_result["data"]["message_count"], 1)
-        self.assertEqual(manual_result["module"], "command_processor")
-        self.assertEqual(
-            manual_result["data"]["manual_full_text"], "启动方式：运行 main.py"
+            ["agent_turn"],
         )
 
     async def test_sender_uses_rich_message_api_for_group_image(self) -> None:
@@ -1201,15 +1443,10 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(hasattr(message, "add_image"))
 
     async def test_agent_executes_tool_call_and_returns_final_text(self) -> None:
-        command_processor = FakeCommandProcessor()
-        registry = ToolRegistry(_runtime(command_processor))
+        registry = ToolRegistry(_runtime())
         llm = FakeLLM(
             [
-                _planning_response(
-                    "call_tools",
-                    tool_calls=[{"name": "list_features", "arguments": {}}],
-                ),
-                _planning_response("final", reason="工具结果已足够"),
+                _tool_response("list_features"),
                 _assistant_response("功能已列出"),
             ]
         )
@@ -1219,7 +1456,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             memory=GroupChatMemory(history_turns=3),
             settings=_settings(),
             tool_registry=registry,
-            tool_runtime=_runtime(command_processor, db=FakeDb()),
+            tool_dependencies=_runtime(db=FakeDb()),
             context_manager=context_manager,  # type: ignore[arg-type]
         )
 
@@ -1227,19 +1464,19 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(response.should_send)
         self.assertEqual(response.text, "功能已列出")
-        self.assertEqual(response.token_usage, 51)
-        self.assertEqual(command_processor.calls, [])
+        self.assertEqual(response.token_usage, 34)
         self.assertEqual(
             context_manager.calls,
             [("1000", "2000", "test-trace"), ("1000", "2000", "test-trace")],
         )
-        self.assertEqual(llm.requests[0]["purpose"], "agent_planning")
-        self.assertEqual(llm.requests[1]["purpose"], "agent_planning")
-        self.assertEqual(llm.requests[2]["purpose"], "agent_rendering")
+        self.assertEqual(llm.requests[0]["purpose"], "agent_turn")
+        self.assertIn("tools", llm.requests[0])
+        self.assertEqual(llm.requests[0]["tool_choice"], "auto")
+        self.assertEqual(llm.requests[1]["purpose"], "agent_turn")
         request_messages = llm.requests[0]["messages"]
         self.assertEqual(request_messages[-1]["role"], "user")
         user_payload = json.loads(request_messages[-1]["content"])
-        self.assertEqual(user_payload["task"], "agent_planning")
+        self.assertEqual(user_payload["task"], "respond_to_event")
         self.assertIn("reply_context", user_payload)
         self.assertEqual(
             user_payload["reply_context"]["current_event"]["text"],
@@ -1259,54 +1496,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_legacy_llm_processor_run_delegates_to_agent_runner(self) -> None:
-        command_processor = FakeCommandProcessor()
-        registry = ToolRegistry(_runtime(command_processor))
-        llm = FakeLLM(
-            [
-                _planning_response(
-                    "call_tools",
-                    tool_calls=[{"name": "list_features", "arguments": {}}],
-                ),
-                _planning_response("final", reason="工具结果已足够"),
-                _assistant_response("功能已列出"),
-            ]
-        )
-        processor = LLMMessageProcessor(
-            llm=llm,  # type: ignore[arg-type]
-            memory=GroupChatMemory(history_turns=3),
-            settings=_settings(),
-            context_manager=FakeContextManager(),  # type: ignore[arg-type]
-            tool_registry=registry,
-            tool_runtime=_runtime(command_processor, db=FakeDb()),
-        )
-
-        response = await processor.run(_event(), trace_id="legacy-trace")
-
-        self.assertTrue(response.should_send)
-        self.assertEqual(response.text, "功能已列出")
-        self.assertEqual(command_processor.calls, [])
-        self.assertEqual(
-            [request["purpose"] for request in llm.requests],
-            ["agent_planning", "agent_planning", "agent_rendering"],
-        )
-
-    async def test_legacy_llm_processor_step_methods_are_disabled(self) -> None:
-        processor = LLMMessageProcessor(
-            llm=FakeLLM([]),  # type: ignore[arg-type]
-            memory=GroupChatMemory(history_turns=3),
-            settings=_settings(),
-        )
-
-        with self.assertRaises(LegacyLLMPipelineDisabled):
-            await processor.plan_intent(_event(), trace_id="legacy-trace")
-
-        self.assertEqual(processor._llm.requests, [])  # type: ignore[attr-defined]
-
     async def test_ignore_message_tool_suppresses_send(self) -> None:
-        command_processor = FakeCommandProcessor()
-        registry = ToolRegistry(_runtime(command_processor))
-        llm = FakeLLM([_planning_response("ignore", reason="普通闲聊")])
+        registry = ToolRegistry(_runtime())
+        llm = FakeLLM([_tool_response("ignore_message", {"reason": "普通闲聊"})])
         runner = AgentRunner(
             llm=llm,  # type: ignore[arg-type]
             memory=GroupChatMemory(history_turns=3),
@@ -1319,14 +1511,10 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(response.should_send)
         self.assertEqual(response.response_type, "none")
-        self.assertEqual(command_processor.calls, [])
 
     async def test_reply_direct_returns_without_tool_or_rendering(self) -> None:
-        command_processor = FakeCommandProcessor()
-        registry = ToolRegistry(_runtime(command_processor))
-        llm = FakeLLM(
-            [_planning_response("reply_direct", draft_reply="我在，有什么事？")]
-        )
+        registry = ToolRegistry(_runtime())
+        llm = FakeLLM([_assistant_response("我在，有什么事？")])
         runner = AgentRunner(
             llm=llm,  # type: ignore[arg-type]
             memory=GroupChatMemory(history_turns=3),
@@ -1341,11 +1529,10 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.text, "我在，有什么事？")
         self.assertEqual(response.response_type, "text")
         self.assertEqual(response.token_usage, 17)
-        self.assertEqual(command_processor.calls, [])
         self.assertEqual(len(llm.requests), 1)
-        self.assertEqual(llm.requests[0]["purpose"], "agent_planning")
+        self.assertEqual(llm.requests[0]["purpose"], "agent_turn")
 
-    def test_planning_prompt_includes_router_tool_hints(self) -> None:
+    def test_system_prompt_includes_native_tool_hints(self) -> None:
         settings = AppSettings(
             **{
                 **_settings().__dict__,
@@ -1354,25 +1541,19 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         )
         manager = PromptManager(settings)
 
-        prompt = manager.build_planning_prompt(_event())
+        prompt = manager.build_system_prompt(_event())
 
         self.assertIn("活动查询优先使用 game_news", prompt)
-        self.assertIn("ignore 规则", prompt)
-        self.assertIn("闲聊规则", prompt)
-        self.assertIn("工具规则", prompt)
-        self.assertIn("完成规则", prompt)
-        self.assertIn("search_web", prompt)
-        self.assertIn("当前公开网页资料", prompt)
-        self.assertIn("法律法规限制", prompt)
+        self.assertIn("原生 tools", prompt)
+        self.assertIn("ignore_message", prompt)
+        self.assertIn("不要输出 JSON 决策协议", prompt)
 
     async def test_image_tool_result_is_returned_with_final_text(self) -> None:
-        command_processor = FakeCommandProcessor()
         activity_runner = FakeActivityRunner()
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin_root = _create_temp_plugin_root(temp_dir)
             registry = ToolRegistry(
                 _runtime(
-                    command_processor,
                     plugin_root=plugin_root,
                     subprocess_runner=activity_runner,
                 )
@@ -1384,16 +1565,10 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             )
             llm = FakeLLM(
                 [
-                    _planning_response(
-                        "call_tools",
-                        tool_calls=[
-                            {
-                                "name": "get_activity_leaderboard",
-                                "arguments": {"leaderboard_type": "race"},
-                            }
-                        ],
+                    _tool_response(
+                        "get_activity_leaderboard",
+                        {"leaderboard_type": "race"},
                     ),
-                    _planning_response("final", reason="已有图片工具结果"),
                     _assistant_response("竞速排行榜来啦"),
                 ]
             )
@@ -1411,29 +1586,14 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.response_type, "image")
         self.assertEqual(response.image_path, expected_image_path)
         self.assertEqual(response.text, "竞速排行榜来啦")
-        self.assertEqual(command_processor.calls, [])
         self.assertEqual(len(activity_runner.calls), 1)
 
     async def test_image_tool_result_survives_later_text_tool(self) -> None:
-        command_processor = FakeCommandProcessor()
         activity_runner = FakeActivityRunner()
-        command_processor.next_results = [
-            {
-                "module": "command_processor",
-                "ok": True,
-                "command": "search_game_knowledge",
-                "data": {"query": "竞速"},
-                "message": "知识库检索完成",
-                "extra_prompt": "",
-                "response_type": "text",
-                "image_path": "",
-            },
-        ]
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin_root = _create_temp_plugin_root(temp_dir)
             registry = ToolRegistry(
                 _runtime(
-                    command_processor,
                     plugin_root=plugin_root,
                     subprocess_runner=activity_runner,
                 )
@@ -1445,20 +1605,26 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             )
             llm = FakeLLM(
                 [
-                    _planning_response(
-                        "call_tools",
-                        tool_calls=[
-                            {
-                                "name": "get_activity_leaderboard",
-                                "arguments": {"leaderboard_type": "race"},
-                            },
-                            {
-                                "name": "search_game_knowledge",
-                                "arguments": {"query": "竞速"},
-                            },
+                    _assistant_response(
+                        "",
+                        [
+                            LLMToolCall(
+                                id="call_image",
+                                name="get_activity_leaderboard",
+                                arguments=json.dumps(
+                                    {"leaderboard_type": "race"},
+                                    ensure_ascii=False,
+                                ),
+                            ),
+                            LLMToolCall(
+                                id="call_search",
+                                name="search_game_knowledge",
+                                arguments=json.dumps(
+                                    {"query": "竞速"}, ensure_ascii=False
+                                ),
+                            ),
                         ],
                     ),
-                    _planning_response("final", reason="图片和文本资料都已齐全"),
                     _assistant_response("竞速排行榜和相关资料都整理好了"),
                 ]
             )
@@ -1503,6 +1669,80 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parsed[0].id, "call_1")
         self.assertEqual(parsed[0].name, "today_most_active")
         self.assertEqual(parsed[0].arguments, '{"top_n":5}')
+
+    def test_llm_client_preserves_reasoning_fields_for_tool_followup(self) -> None:
+        client = LLMClient(_settings())
+
+        normalized = client._normalize_assistant_message(
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": "先查询功能列表。",
+                "reasoning_details": [{"type": "summary", "text": "查询工具"}],
+                "tool_calls": [
+                    {
+                        "id": "call_reasoning",
+                        "type": "function",
+                        "function": {"name": "list_features", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+
+        self.assertIsNone(normalized["content"])
+        self.assertEqual(normalized["reasoning_content"], "先查询功能列表。")
+        self.assertEqual(
+            normalized["reasoning_details"],
+            [{"type": "summary", "text": "查询工具"}],
+        )
+        self.assertEqual(normalized["tool_calls"][0]["id"], "call_reasoning")
+
+    async def test_reasoning_content_round_trips_after_tool_call(self) -> None:
+        first_turn = _tool_response("list_features", call_id="call_reasoning")
+        first_turn.assistant_message["reasoning_content"] = "先查询功能列表。"
+        llm = FakeLLM([first_turn, _assistant_response("功能已列出")])
+        runner = AgentRunner(
+            llm=llm,  # type: ignore[arg-type]
+            memory=GroupChatMemory(history_turns=3),
+            settings=_settings(),
+            tool_registry=ToolRegistry(_runtime()),
+            context_manager=FakeContextManager(),  # type: ignore[arg-type]
+        )
+
+        response = await runner.run(_event(), trace_id="reasoning-roundtrip")
+
+        self.assertEqual(response.text, "功能已列出")
+        assistant_turns = [
+            message
+            for message in llm.requests[1]["messages"]
+            if message.get("role") == "assistant" and message.get("tool_calls")
+        ]
+        self.assertEqual(assistant_turns[0]["reasoning_content"], "先查询功能列表。")
+
+    async def test_non_retryable_http_error_is_not_retried_for_same_model(
+        self,
+    ) -> None:
+        client = LLMClient(_settings())
+        failure = HTTPError(
+            url="https://example.invalid/chat/completions",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=io.BytesIO(b'{"error":{"message":"invalid request"}}'),
+        )
+
+        with patch(
+            "bot_app.llm_client.request.urlopen", side_effect=failure
+        ) as urlopen:
+            with self.assertRaises(LLMRequestError) as raised:
+                await client.chat_completion(
+                    messages=[{"role": "user", "content": "hello"}],
+                    trace_id="non-retryable",
+                )
+
+        self.assertFalse(raised.exception.retryable)
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(urlopen.call_count, 1)
 
     def test_group_chat_memory_stores_compact_user_event(self) -> None:
         memory = GroupChatMemory(history_turns=3)
@@ -1558,7 +1798,11 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             session_memory["recent_turns"],
             [
                 {"role": "user", "turn_type": "user_event", "text": "今天 boss 开了吗"},
-                {"role": "assistant", "turn_type": "assistant_reply", "text": "我帮你查活动"},
+                {
+                    "role": "assistant",
+                    "turn_type": "assistant_reply",
+                    "text": "我帮你查活动",
+                },
             ],
         )
 
@@ -1720,7 +1964,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    def test_bot_database_migrates_legacy_messages_table_before_creating_indexes(self) -> None:
+    def test_bot_database_migrates_legacy_messages_table_before_creating_indexes(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "legacy.db"
             conn = __import__("sqlite3").connect(db_path)
@@ -1781,7 +2027,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("idx_messages_group_meaningful_created", index_names)
             conn.close()
 
-    def test_build_message_record_metadata_marks_meaningful_text_and_mentions(self) -> None:
+    def test_build_message_record_metadata_marks_meaningful_text_and_mentions(
+        self,
+    ) -> None:
         metadata = build_message_record_metadata(
             "[CQ:at,qq=999]  今天打 boss 吗  [CQ:image,file=a.png]",
             bot_qq="999",
@@ -1821,7 +2069,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         settings = AppSettings(
             **{
                 **settings.__dict__,
-                "context_compact_max_chars": 30,
+                "context_compact_max_chars": 1000,
                 "context_compact_keep_recent_turns": 1,
             }
         )
@@ -1836,7 +2084,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                     "content": json.dumps(
                         {
                             "kind": "user_event",
-                            "event": {"text": "最近 boss 什么时间开"},
+                            "event": {"text": "最近 boss 什么时间开" * 80},
                         },
                         ensure_ascii=False,
                     ),

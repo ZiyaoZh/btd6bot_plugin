@@ -3,12 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from ..protocol import CommandResultPayload, EventPayload
-from .base import ConcreteTool, ToolRuntime, object_schema
+from .base import ConcreteTool, ToolDependencies, object_schema
 from .web_search_service import build_search_web_result
 
 
-def build_web_tools(runtime: ToolRuntime) -> list[ConcreteTool]:
-    del runtime
+def build_web_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
+    del dependencies
 
     async def search_web(
         arguments: dict[str, Any], event: EventPayload

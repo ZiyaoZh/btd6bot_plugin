@@ -1,9 +1,9 @@
 name = "btd6bot_plugin"
-version = "0.1.0"
+version = "0.2.0"
 main = "main.py"
 entry_class = "Btd6BotPlugin"
 author = "btd6bot"
-description = "BTD6 群聊智能插件：支持路由决策、多轮工具编排、知识库检索、活动资讯/排行榜与消息持久化。"
+description = "BTD6 群聊智能插件：基于 Model + Harness 的原生工具编排、知识库检索与活动资讯。"
 
 [dependencies]
 

@@ -3,11 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from ..protocol import CommandResultPayload, EventPayload
-from .base import ConcreteTool, ToolRuntime, object_schema, ok_result
+from .base import ConcreteTool, ToolDependencies, object_schema, ok_result
 from .features import get_feature_catalog
 
 
-def build_general_tools(runtime: ToolRuntime) -> list[ConcreteTool]:
+def build_general_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
     async def ignore_message(
         arguments: dict[str, Any], event: EventPayload
     ) -> CommandResultPayload:

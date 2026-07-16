@@ -14,19 +14,27 @@ DEFAULT_RESPONSE_TYPE = "text"
 class ConcreteTool:
     spec: ToolSpec
     handler: ToolHandler
+    execution_timeout_seconds: float | None = None
 
 
 @dataclass
-class ToolRuntime:
+class ToolDependencies:
     db: Any
     plugin_root: Path
     manual_file: Path
-    command_guide_dir: Path
     kb_root: Path
     api_processor_root: Path
     chat_monkey_root: Path
     subprocess_runner: Any = None
     manual_text_cache: str = ""
+    image_gen_api_base_url: str = ""
+    image_gen_api_key: str = ""
+    image_gen_model: str = ""
+    image_gen_request_timeout: float = 180.0
+    image_gen_max_retries: int = 2
+    image_gen_retry_delay_seconds: float = 2.0
+    image_gen_use_proxy: bool = False
+    image_gen_max_bytes: int = 20 * 1024 * 1024
 
     @classmethod
     def create(
@@ -35,21 +43,37 @@ class ToolRuntime:
         db: Any,
         plugin_root: Path,
         manual_file: str | Path,
-        command_guide_dir: str | Path,
         subprocess_runner: Any = None,
-    ) -> ToolRuntime:
+        image_gen_api_base_url: str = "",
+        image_gen_api_key: str = "",
+        image_gen_model: str = "",
+        image_gen_request_timeout: float = 180.0,
+        image_gen_max_retries: int = 2,
+        image_gen_retry_delay_seconds: float = 2.0,
+        image_gen_use_proxy: bool = False,
+        image_gen_max_bytes: int = 20 * 1024 * 1024,
+    ) -> ToolDependencies:
         root = plugin_root.resolve()
         resolved_manual_file = _resolve_under_root(root, manual_file)
-        resolved_command_guide_dir = _resolve_under_root(root, command_guide_dir)
         return cls(
             db=db,
             plugin_root=root,
             manual_file=resolved_manual_file,
-            command_guide_dir=resolved_command_guide_dir,
             kb_root=root / "btd6_knowledge_base",
             api_processor_root=root / "btd6_api_processor",
             chat_monkey_root=root / "ChatMonkeyTD",
             subprocess_runner=subprocess_runner,
+            image_gen_api_base_url=str(image_gen_api_base_url or "").strip().rstrip("/"),
+            image_gen_api_key=str(image_gen_api_key or "").strip(),
+            image_gen_model=str(image_gen_model or "").strip(),
+            image_gen_request_timeout=max(1.0, float(image_gen_request_timeout)),
+            image_gen_max_retries=max(0, min(5, int(image_gen_max_retries))),
+            image_gen_retry_delay_seconds=max(
+                0.0,
+                min(60.0, float(image_gen_retry_delay_seconds)),
+            ),
+            image_gen_use_proxy=bool(image_gen_use_proxy),
+            image_gen_max_bytes=max(1024, int(image_gen_max_bytes)),
         )
 
 

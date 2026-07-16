@@ -1,886 +1,170 @@
 from __future__ import annotations
 
-import json
+from typing import Callable
 
-from ..context_contracts import (
-    build_current_event_context,
-    serialize_compact_user_event,
-)
-from ..group_context import build_recent_group_window
+from ..context_manager import ContextManager
+from ..harness.context import ContextAssembler
+from ..harness.policies import GroundingPolicy
+from ..harness.runtime import AgentHarness
+from ..harness.tool_executor import ToolExecutor
+from ..harness.types import AgentOutcome, ModelTurnHandler, RunRequest
 from ..llm_client import LLMClient
 from ..logging_utils import log_flow
 from ..memory import GroupChatMemory
-from ..protocol import CommandResultPayload, EventPayload
+from ..model.chat_completions import ChatCompletionsModel
+from ..model.types import ModelGateway
+from ..protocol import EventPayload
 from ..settings import AppSettings
-from ..context_manager import ContextManager
-from ..tools.base import ToolRuntime
+from ..tools.base import ToolDependencies
+from ..tools.knowledge_service import build_kb_query_plan
 from .prompt_manager import PromptManager
-from .tool_registry import ToolRegistry, parse_tool_arguments
-from .types import (
-    AgentResponse,
-    PlanningResult,
-    PlanningToolCall,
-    ToolCallRecord,
-)
+from .tool_registry import ToolRegistry
+from .types import AgentResponse, ToolCallRecord
 
 
-class AgentRunner:
+class Agent:
+    """Public facade for the Model + Harness composition.
+
+    New application code should defer conversation commit until delivery succeeds
+    by calling ``run(..., commit=False)`` followed by ``commit_turn``.
+    """
+
     def __init__(
         self,
         llm: LLMClient,
         memory: GroupChatMemory,
         settings: AppSettings,
         tool_registry: ToolRegistry,
-        tool_runtime: ToolRuntime | None = None,
+        tool_dependencies: ToolDependencies | None = None,
         prompt_manager: PromptManager | None = None,
         context_manager: ContextManager | None = None,
+        *,
+        model: ModelGateway | None = None,
+        tool_executor: ToolExecutor | None = None,
+        grounding_policy: GroundingPolicy | None = None,
+        harness: AgentHarness | None = None,
     ) -> None:
-        self._llm = llm
-        self._memory = memory
-        self._settings = settings
-        self._tool_registry = tool_registry
-        self._tool_runtime = tool_runtime
-        self._prompt_manager = prompt_manager or PromptManager(settings)
-        self._context_manager = context_manager or ContextManager(
-            llm=llm, settings=settings
+        self._grounding = grounding_policy or GroundingPolicy(
+            query_classifier=_build_knowledge_classifier(tool_dependencies)
+        )
+        manager = context_manager or ContextManager(llm=llm, settings=settings)
+        context = ContextAssembler(
+            memory=memory,
+            context_manager=manager,
+            settings=settings,
+            tool_dependencies=tool_dependencies,
+        )
+        self._harness = harness or AgentHarness(
+            model=model or ChatCompletionsModel(llm),
+            context=context,
+            tools=tool_executor
+            or ToolExecutor(
+                tool_registry,
+                timeout_seconds=settings.tool_timeout_seconds,
+                max_result_chars=settings.max_tool_result_chars,
+            ),
+            prompts=prompt_manager or PromptManager(settings),
+            policy=self._grounding,
+            max_tool_rounds=settings.max_tool_rounds,
+            max_reply_chars=settings.max_reply_chars,
         )
 
-    async def run(self, event: EventPayload, trace_id: str = "") -> AgentResponse:
-        await self._compact_if_needed(event, trace_id=trace_id)
-        reply_context = self._build_reply_context(event)
-        is_knowledge_query = self._is_game_knowledge_query(event["text"])
-        token_usage = 0
-        tool_records: list[ToolCallRecord] = []
-        last_command_result: CommandResultPayload | None = None
-        last_image_result: CommandResultPayload | None = None
-        planning_result: PlanningResult | None = None
-
-        for round_index in range(self._settings.max_tool_rounds + 1):
-            planning_result, planning_tokens = await self._plan_next_step(
-                event=event,
-                reply_context=reply_context,
-                tool_records=tool_records,
-                trace_id=trace_id,
-                round_index=round_index,
-            )
-            token_usage += planning_tokens
-            planning_result = self._apply_knowledge_hard_rule(
-                event=event,
-                planning_result=planning_result,
-                tool_records=tool_records,
-                is_knowledge_query=is_knowledge_query,
-            )
-
-            if planning_result.decision == "ignore":
-                if trace_id:
-                    log_flow(
-                        stage="agent.plan_result",
-                        trace_id=trace_id,
-                        round=round_index + 1,
-                        decision=planning_result.decision,
-                        reason=planning_result.reason,
-                    )
-                return AgentResponse(
-                    text="",
-                    response_type="none",
-                    image_path="",
-                    token_usage=token_usage,
-                    should_send=False,
-                    tool_calls=tool_records,
-                )
-
-            if planning_result.decision == "reply_direct":
-                if trace_id:
-                    log_flow(
-                        stage="agent.plan_result",
-                        trace_id=trace_id,
-                        round=round_index + 1,
-                        decision=planning_result.decision,
-                        reason=planning_result.reason,
-                        draft_reply=planning_result.draft_reply,
-                    )
-                text = self._normalize_plain_text(planning_result.draft_reply)
-                text = text or self._fallback_text(last_command_result)
-                self._log_knowledge_summary(
-                    event=event,
-                    trace_id=trace_id,
-                    planning_result=planning_result,
-                    tool_records=tool_records,
-                    final_text=text,
-                )
-                await self._record_turn(event, text, trace_id=trace_id)
-                return AgentResponse(
-                    text=text[: self._settings.max_reply_chars],
-                    response_type="text",
-                    image_path="",
-                    token_usage=token_usage,
-                    should_send=bool(text.strip()),
-                    tool_calls=tool_records,
-                )
-
-            if planning_result.decision == "final":
-                if trace_id:
-                    log_flow(
-                        stage="agent.plan_result",
-                        trace_id=trace_id,
-                        round=round_index + 1,
-                        decision=planning_result.decision,
-                        reason=planning_result.reason,
-                    )
-                knowledge_fallback_text = self._knowledge_ungrounded_fallback_text(
-                    tool_records
-                )
-                if is_knowledge_query and knowledge_fallback_text:
-                    text = knowledge_fallback_text
-                    response_type, image_path = self._response_metadata(
-                        last_command_result=last_command_result,
-                        last_image_result=last_image_result,
-                    )
-                    self._log_knowledge_summary(
-                        event=event,
-                        trace_id=trace_id,
-                        planning_result=planning_result,
-                        tool_records=tool_records,
-                        final_text=text,
-                    )
-                    await self._record_turn(event, text, trace_id=trace_id)
-                    return AgentResponse(
-                        text=text[: self._settings.max_reply_chars],
-                        response_type=response_type,
-                        image_path=image_path,
-                        token_usage=token_usage,
-                        should_send=bool(text.strip()) or response_type == "image",
-                        tool_calls=tool_records,
-                    )
-                text, rendering_tokens = await self._render_final_response(
-                    event=event,
-                    reply_context=reply_context,
-                    planning_result=planning_result,
-                    tool_records=tool_records,
-                    trace_id=trace_id,
-                )
-                token_usage += rendering_tokens
-                text = text or self._fallback_text(last_command_result)
-                response_type, image_path = self._response_metadata(
-                    last_command_result=last_command_result,
-                    last_image_result=last_image_result,
-                )
-                self._log_knowledge_summary(
-                    event=event,
-                    trace_id=trace_id,
-                    planning_result=planning_result,
-                    tool_records=tool_records,
-                    final_text=text,
-                )
-                await self._record_turn(event, text, trace_id=trace_id)
-                return AgentResponse(
-                    text=text[: self._settings.max_reply_chars],
-                    response_type=response_type,
-                    image_path=image_path,
-                    token_usage=token_usage,
-                    should_send=bool(text.strip()) or response_type == "image",
-                    tool_calls=tool_records,
-                )
-
-            if trace_id:
-                log_flow(
-                    stage="agent.plan_result",
-                    trace_id=trace_id,
-                    round=round_index + 1,
-                    decision=planning_result.decision,
-                    reason=planning_result.reason,
-                    tool_calls=[
-                        {"name": item.name, "arguments": item.arguments}
-                        for item in planning_result.tool_calls
-                    ],
-                    reply_context=reply_context if round_index == 0 else None,
-                )
-
-            for planned_tool_call in planning_result.tool_calls:
-                command_result = await self._tool_registry.execute(
-                    planned_tool_call.name, planned_tool_call.arguments, event
-                )
-                last_command_result = command_result
-                if self._is_image_result(command_result):
-                    last_image_result = command_result
-                tool_records.append(
-                    ToolCallRecord(
-                        name=planned_tool_call.name,
-                        arguments=planned_tool_call.arguments,
-                        result=command_result,
-                    )
-                )
-                if trace_id:
-                    log_flow(
-                        stage="agent.tool_result",
-                        trace_id=trace_id,
-                        tool_name=planned_tool_call.name,
-                        arguments=planned_tool_call.arguments,
-                        command_result=command_result,
-                    )
-
-        text = self._fallback_text(last_command_result)
-        response_type, image_path = self._response_metadata(
-            last_command_result=last_command_result,
-            last_image_result=last_image_result,
-        )
-        self._log_knowledge_summary(
+    async def run(
+        self,
+        event: EventPayload,
+        trace_id: str = "",
+        *,
+        commit: bool = True,
+        on_model_turn: ModelTurnHandler | None = None,
+    ) -> AgentResponse:
+        request = RunRequest(
             event=event,
             trace_id=trace_id,
-            planning_result=planning_result,
-            tool_records=tool_records,
-            final_text=text,
+            on_model_turn=on_model_turn,
         )
-        await self._record_turn(event, text, trace_id=trace_id)
-        return AgentResponse(
-            text=text[: self._settings.max_reply_chars],
-            response_type=response_type,
-            image_path=image_path,
-            token_usage=token_usage,
-            should_send=bool(text.strip()) or response_type == "image",
-            tool_calls=tool_records,
-        )
+        outcome = await self._harness.run(request)
+        self._log_knowledge_summary(event, outcome, trace_id=trace_id)
+        if commit and outcome.should_send:
+            await self._harness.commit(request, outcome)
+        return _to_agent_response(outcome)
 
-    async def _plan_next_step(
+    async def commit_turn(
         self,
-        *,
         event: EventPayload,
-        reply_context: dict[str, object],
-        tool_records: list[ToolCallRecord],
-        trace_id: str,
-        round_index: int,
-    ) -> tuple[PlanningResult, int]:
-        planning_messages = [
-            {
-                "role": "system",
-                "content": self._prompt_manager.build_planning_prompt(event),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "task": "agent_planning",
-                        "reply_context": reply_context,
-                        "tool_history": [
-                            {
-                                "name": record.name,
-                                "arguments": record.arguments,
-                                "result": record.result,
-                            }
-                            for record in tool_records
-                        ],
-                        "round": round_index + 1,
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-        ]
-        response = await self._llm.chat_completion(
-            messages=planning_messages,
-            trace_id=trace_id,
-            purpose="agent_planning",
-            response_format={"type": "json_object"},
-            temperature=0.2,
+        response: AgentResponse,
+        *,
+        trace_id: str = "",
+    ) -> None:
+        await self._harness.commit(
+            RunRequest(event=event, trace_id=trace_id),
+            AgentOutcome(
+                text=response.text,
+                response_type=response.response_type,
+                image_path=response.image_path,
+                token_usage=response.token_usage,
+                should_send=response.should_send,
+                tool_calls=response.tool_calls,
+                terminal_reason=response.terminal_reason,
+            ),
         )
-        return self._parse_planning_result(response.content), response.total_tokens
 
     def reset_user_context(self, group_id: str, user_id: str) -> None:
-        self._memory.reset(group_id, user_id)
-
-    def _build_user_message(self, event: EventPayload) -> str:
-        return serialize_compact_user_event(event)
-
-    async def _record_turn(
-        self, event: EventPayload, assistant_text: str, trace_id: str = ""
-    ) -> None:
-        self._memory.append_turn(
-            group_id=event["group_id"],
-            user_id=event["user_id"],
-            user_text=self._build_user_message(event),
-            assistant_text=(assistant_text or "").strip(),
-        )
-        await self._compact_if_needed(event, trace_id=trace_id)
-
-    async def _compact_if_needed(self, event: EventPayload, trace_id: str = "") -> None:
-        await self._context_manager.compact_if_needed(
-            memory=self._memory,
-            group_id=event["group_id"],
-            user_id=event["user_id"],
-            trace_id=trace_id,
-        )
-
-    def _fallback_text(self, command_result: CommandResultPayload | None) -> str:
-        if not command_result:
-            return "我暂时不知道怎么回答这个问题。"
-
-        extra_prompt = str(command_result.get("extra_prompt", "") or "").strip()
-        message = str(command_result.get("message", "") or "").strip()
-        if extra_prompt:
-            return message or "工具执行完成。"
-        if command_result.get("ok", False):
-            return message or "工具执行完成。"
-        return message or "工具执行失败，请稍后重试。"
-
-    def _knowledge_ungrounded_fallback_text(
-        self, tool_records: list[ToolCallRecord]
-    ) -> str:
-        if self._has_successful_web_search(tool_records):
-            return ""
-
-        search_records = [
-            record for record in tool_records if record.name == "search_game_knowledge"
-        ]
-        if not search_records:
-            return ""
-
-        read_records = [
-            record for record in tool_records if record.name == "read_game_knowledge_file"
-        ]
-        last_search = search_records[-1].result
-        last_search_data = last_search.get("data", {}) or {}
-        matched_count = self._extract_int(last_search_data.get("matched_count"), default=0)
-        query = str(
-            last_search_data.get("knowledge_query")
-            or last_search_data.get("knowledge_query_raw")
-            or ""
-        ).strip()
-
-        if not last_search.get("ok", False):
-            message = str(last_search.get("message", "") or "").strip()
-            return message or "游戏知识检索失败，暂时不能基于知识库证据回答。"
-
-        if matched_count <= 0:
-            subject = f"「{query}」" if query else "这个问题"
-            return (
-                f"知识库里暂时没有检索到与{subject}匹配的资料，"
-                "我不能基于知识库证据确认结论。可以换个塔名、升级名或更具体的关键词再查。"
-            )
-
-        if not read_records:
-            return (
-                "知识库命中了候选页面，但还没有读取到页面内容，"
-                "暂时不能基于证据回答。"
-            )
-
-        successful_reads = [
-            record
-            for record in read_records
-            if record.result.get("ok", False)
-            and self._extract_int(
-                (record.result.get("data", {}) or {}).get("content_chars"),
-                default=0,
-            )
-            > 0
-        ]
-        if not successful_reads:
-            return (
-                "知识库命中了候选页面，但没有成功读取到可用内容，"
-                "暂时不能基于证据回答。可以换个关键词或稍后重试。"
-            )
-
-        return ""
-
-    def _response_metadata(
-        self,
-        *,
-        last_command_result: CommandResultPayload | None,
-        last_image_result: CommandResultPayload | None,
-    ) -> tuple[str, str]:
-        if last_image_result is not None:
-            return "image", str(last_image_result.get("image_path", "") or "")
-        response_type = str(
-            (last_command_result or {}).get("response_type", "text") or "text"
-        ).lower()
-        image_path = str((last_command_result or {}).get("image_path", "") or "")
-        return response_type, image_path
-
-    def _is_image_result(self, command_result: CommandResultPayload) -> bool:
-        return str(
-            command_result.get("response_type", "") or ""
-        ).lower() == "image" and bool(
-            str(command_result.get("image_path", "") or "").strip()
-        )
-
-    def _serialize_tool_result(self, result: CommandResultPayload) -> str:
-        return json.dumps(result, ensure_ascii=False, default=str)
-
-    async def _render_final_response(
-        self,
-        *,
-        event: EventPayload,
-        reply_context: dict[str, object],
-        planning_result: PlanningResult,
-        tool_records: list[ToolCallRecord],
-        trace_id: str,
-    ) -> tuple[str, int]:
-        aggregated_extra_prompt = "\n".join(
-            str(record.result.get("extra_prompt", "") or "").strip()
-            for record in tool_records
-            if str(record.result.get("extra_prompt", "") or "").strip()
-        ).strip()
-        rendering_messages = [
-            {
-                "role": "system",
-                "content": self._prompt_manager.build_rendering_prompt(event),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "task": "agent_rendering",
-                        "reply_context": reply_context,
-                        "planning_result": {
-                            "decision": planning_result.decision,
-                            "reason": planning_result.reason,
-                            "draft_reply": planning_result.draft_reply,
-                        },
-                        "tool_results": [
-                            {
-                                "name": record.name,
-                                "arguments": record.arguments,
-                                "result": record.result,
-                            }
-                            for record in tool_records
-                        ],
-                        "extra_prompt": aggregated_extra_prompt,
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-        ]
-        response = await self._llm.chat_completion(
-            messages=rendering_messages,
-            trace_id=trace_id,
-            purpose="agent_rendering",
-            temperature=0.4,
-        )
-        if trace_id:
-            log_flow(
-                stage="agent.render_result",
-                trace_id=trace_id,
-                content=response.content,
-                total_tokens=response.total_tokens,
-            )
-        return self._normalize_plain_text(response.content), response.total_tokens
-
-    def _build_reply_context(self, event: EventPayload) -> dict[str, object]:
-        recent_group_window = self._load_recent_group_window(event)
-        return self._memory.build_reply_context(
-            current_event=build_current_event_context(event),
-            group_id=event["group_id"],
-            user_id=event["user_id"],
-            recent_group_window=recent_group_window,
-        )
-
-    def _load_recent_group_window(self, event: EventPayload) -> list[dict[str, object]]:
-        db = self._tool_runtime.db if self._tool_runtime is not None else None
-        if db is None:
-            return []
-
-        rows = db.get_recent_group_messages(
-            event["group_id"],
-            limit=self._settings.recent_group_window_size,
-        )
-        return build_recent_group_window(
-            rows,
-            limit=self._settings.recent_group_window_size,
-            bot_qq=self._settings.bot_qq,
-            bot_name=self._settings.bot_name,
-        )
-
-    def _normalize_plain_text(self, text: str) -> str:
-        cleaned = (text or "").strip()
-        if not cleaned:
-            return ""
-        cleaned = cleaned.replace("```", "")
-        cleaned = cleaned.replace("**", "")
-        cleaned = cleaned.replace("__", "")
-        cleaned = cleaned.replace("`", "")
-
-        lines = []
-        for raw_line in cleaned.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            while line.startswith("#"):
-                line = line[1:].strip()
-            lines.append(line)
-        return "\n".join(lines)
-
-    def _parse_planning_result(self, raw: str) -> PlanningResult:
-        payload = self._safe_parse_json_object(raw)
-        decision = str(payload.get("decision", "reply_direct") or "reply_direct").strip()
-        if decision not in {"ignore", "reply_direct", "call_tools", "final"}:
-            decision = "reply_direct"
-
-        tool_calls: list[PlanningToolCall] = []
-        raw_tool_calls = payload.get("tool_calls", [])
-        if isinstance(raw_tool_calls, list):
-            for item in raw_tool_calls:
-                if not isinstance(item, dict):
-                    continue
-                name = str(item.get("name", "") or "").strip()
-                arguments = item.get("arguments", {})
-                if not name or not self._tool_registry.has_tool(name):
-                    continue
-                if not isinstance(arguments, dict):
-                    arguments = parse_tool_arguments(str(arguments or "{}"))
-                tool_calls.append(PlanningToolCall(name=name, arguments=arguments))
-
-        if decision == "call_tools" and not tool_calls:
-            decision = "final"
-
-        return PlanningResult(
-            decision=decision,
-            reason=str(payload.get("reason", "") or "").strip(),
-            draft_reply=str(payload.get("draft_reply", "") or "").strip(),
-            tool_calls=tool_calls,
-        )
-
-    def _apply_knowledge_hard_rule(
-        self,
-        *,
-        event: EventPayload,
-        planning_result: PlanningResult,
-        tool_records: list[ToolCallRecord],
-        is_knowledge_query: bool,
-    ) -> PlanningResult:
-        if not is_knowledge_query:
-            return planning_result
-
-        search_records = [
-            record for record in tool_records if record.name == "search_game_knowledge"
-        ]
-        read_records = [
-            record for record in tool_records if record.name == "read_game_knowledge_file"
-        ]
-        last_search = search_records[-1].result if search_records else None
-        last_search_data = (last_search or {}).get("data", {}) or {}
-        matched_count = self._extract_int(last_search_data.get("matched_count"), default=0)
-        matched_paths = self._extract_string_list(last_search_data.get("matched_paths"))
-        read_paths = {
-            str((record.result.get("data", {}) or {}).get("file_path", "") or "").strip()
-            or str(record.arguments.get("file_path", "") or "").strip()
-            for record in read_records
-        }
-        read_paths = {path for path in read_paths if path}
-        successful_reads = [
-            record
-            for record in read_records
-            if record.result.get("ok", False)
-            and self._extract_int(
-                (record.result.get("data", {}) or {}).get("content_chars"),
-                default=0,
-            )
-            > 0
-        ]
-
-        if not search_records:
-            return PlanningResult(
-                decision="call_tools",
-                reason="知识问题必须先检索知识库。",
-                tool_calls=[
-                    PlanningToolCall(
-                        name="search_game_knowledge",
-                        arguments={"query": event["text"]},
-                    )
-                ],
-            )
-
-        if matched_count > 0:
-            target_count = self._knowledge_read_target_count(last_search_data)
-            target_paths = matched_paths[:target_count]
-            unread_paths = [path for path in target_paths if path not in read_paths]
-            if (not read_records or not successful_reads) and unread_paths:
-                return PlanningResult(
-                    decision="call_tools",
-                    reason="知识库已命中，需读取候选文件证据。",
-                    tool_calls=[
-                        PlanningToolCall(
-                            name="read_game_knowledge_file",
-                            arguments={
-                                "file_path": path,
-                                "query": event["text"],
-                            },
-                        )
-                        for path in unread_paths
-                    ],
-                )
-
-        if matched_count > 0 and not read_records:
-            return PlanningResult(
-                decision="call_tools",
-                reason="知识库已命中，必须先读取至少一个候选文件。",
-                tool_calls=[
-                    PlanningToolCall(
-                        name="read_game_knowledge_file",
-                        arguments={
-                            "file_path": matched_paths[0],
-                            "query": event["text"],
-                        },
-                    )
-                ],
-            )
-
-        if matched_count <= 0 and planning_result.decision == "reply_direct":
-            return PlanningResult(
-                decision="final",
-                reason="知识库未命中，需走统一未命中兜底。",
-                draft_reply=planning_result.draft_reply,
-                tool_calls=planning_result.tool_calls,
-            )
-
-        return planning_result
-
-    def _knowledge_read_target_count(self, search_data: dict[str, object]) -> int:
-        matched_count = self._extract_int(search_data.get("matched_count"), default=0)
-        if matched_count <= 1:
-            return max(0, matched_count)
-
-        confidence = self._extract_float(search_data.get("confidence"), default=0.0)
-        score_margin = self._extract_float(search_data.get("score_margin"), default=0.0)
-        candidate_details = search_data.get("candidate_details", [])
-        top_reasons: list[str] = []
-        if isinstance(candidate_details, list) and candidate_details:
-            first = candidate_details[0]
-            if isinstance(first, dict):
-                raw_reasons = first.get("reasons", [])
-                if isinstance(raw_reasons, list):
-                    top_reasons = [str(item) for item in raw_reasons]
-
-        if confidence >= 0.9 and score_margin >= 120:
-            return 1
-        if any(reason in {"exact_title", "exact_path_stem"} for reason in top_reasons):
-            return 1
-        if confidence >= 0.75 and score_margin >= 60:
-            return min(2, matched_count)
-        return min(3, matched_count)
-
-    def _has_successful_web_search(self, tool_records: list[ToolCallRecord]) -> bool:
-        for record in tool_records:
-            if record.name != "search_web":
-                continue
-            if not record.result.get("ok", False):
-                continue
-            data = record.result.get("data", {}) or {}
-            if self._extract_int(data.get("result_count"), default=0) > 0:
-                return True
-            results = data.get("results", [])
-            if isinstance(results, list) and results:
-                return True
-        return False
-
-    def _is_game_knowledge_query(self, text: str) -> bool:
-        normalized = str(text or "").lower()
-        keywords = (
-            "数据",
-            "机制",
-            "资料",
-            "属性",
-            "伤害",
-            "攻速",
-            "价格",
-            "射程",
-            "穿透",
-            "升级",
-            "路线",
-            "上路",
-            "中路",
-            "下路",
-            "收益",
-            "加成",
-            "技能",
-            "商店",
-            "灵魂",
-            "陷阱",
-            "支援",
-            "亡灵",
-            "太阳神庙",
-            "永久啤酒",
-            "反迷彩",
-            "破铅",
-            "ddt",
-            "能不能",
-            "抓",
-            "野兽之主",
-            "驯兽师",
-            "人鱼猴",
-            "鱼人猴",
-            "beast handler",
-            "mermaid monkey",
-            "brickell",
-        )
-        return any(keyword in normalized for keyword in keywords)
+        self._harness.reset(group_id, user_id)
 
     def _log_knowledge_summary(
-        self,
-        *,
-        event: EventPayload,
-        trace_id: str,
-        planning_result: PlanningResult | None,
-        tool_records: list[ToolCallRecord],
-        final_text: str,
+        self, event: EventPayload, outcome: AgentOutcome, *, trace_id: str
     ) -> None:
-        summary = self._build_knowledge_summary(
+        summary = self._grounding.build_summary(
             event=event,
-            planning_result=planning_result,
-            tool_records=tool_records,
-            final_text=final_text,
+            records=outcome.tool_calls,
+            final_text=outcome.text,
         )
-        if not trace_id or summary is None:
-            return
-        log_flow(stage="agent.knowledge_summary", trace_id=trace_id, **summary)
+        if trace_id and summary is not None:
+            log_flow(stage="agent.knowledge_summary", trace_id=trace_id, **summary)
 
     def _build_knowledge_summary(
         self,
         *,
         event: EventPayload,
-        planning_result: PlanningResult | None,
+        planning_result: object | None = None,
         tool_records: list[ToolCallRecord],
         final_text: str,
     ) -> dict[str, object] | None:
-        search_records = [
-            record for record in tool_records if record.name == "search_game_knowledge"
-        ]
-        read_records = [
-            record for record in tool_records if record.name == "read_game_knowledge_file"
-        ]
-        web_records = [
-            record for record in tool_records if record.name == "search_web"
-        ]
-        planned_knowledge = bool(
-            planning_result
-            and any(
-                item.name
-                in {"search_game_knowledge", "read_game_knowledge_file", "search_web"}
-                for item in planning_result.tool_calls
-            )
+        del planning_result
+        return self._grounding.build_summary(
+            event=event,
+            records=tool_records,
+            final_text=final_text,
         )
-        if not search_records and not read_records and not planned_knowledge:
-            return None
 
-        last_search = search_records[-1].result if search_records else None
-        last_search_data = (last_search or {}).get("data", {}) or {}
-        matched_count = self._extract_int(last_search_data.get("matched_count"), default=0)
-        matched_paths = self._extract_string_list(last_search_data.get("matched_paths"))
-        candidate_details = last_search_data.get("candidate_details", [])
-        candidate_details = candidate_details if isinstance(candidate_details, list) else []
-        read_paths: list[str] = []
-        successful_read_paths: list[str] = []
-        total_content_chars = 0
-        for record in read_records:
-            data = record.result.get("data", {}) or {}
-            file_path = str(data.get("file_path", "") or "").strip()
-            if file_path:
-                read_paths.append(file_path)
-                if record.result.get("ok", False):
-                    successful_read_paths.append(file_path)
-            total_content_chars += self._extract_int(
-                data.get("content_chars", data.get("chars")),
-                default=0,
-            )
+    def _is_game_knowledge_query(self, text: str) -> bool:
+        return self._grounding.is_knowledge_query(text)
 
-        web_queries: list[str] = []
-        web_result_count = 0
-        successful_web_count = 0
-        for record in web_records:
-            data = record.result.get("data", {}) or {}
-            query = str(data.get("query", "") or "").strip()
-            if query:
-                web_queries.append(query)
-            result_count = self._extract_int(data.get("result_count"), default=0)
-            results = data.get("results", [])
-            if result_count <= 0 and isinstance(results, list):
-                result_count = len(results)
-            web_result_count += max(0, result_count)
-            if record.result.get("ok", False) and result_count > 0:
-                successful_web_count += 1
 
-        web_grounded = successful_web_count > 0
-        answer_grounded = bool(successful_read_paths) or web_grounded
-        fallback_reason = ""
-        if web_grounded:
-            fallback_reason = ""
-        elif search_records:
-            if not last_search or not last_search.get("ok", False):
-                fallback_reason = "knowledge_search_failed"
-            elif matched_count <= 0:
-                fallback_reason = "knowledge_not_found"
-            elif not read_records:
-                fallback_reason = "search_hit_but_not_read"
-            elif not successful_read_paths:
-                fallback_reason = "knowledge_read_failed"
-        elif read_records and not successful_read_paths:
-            fallback_reason = "knowledge_read_failed"
+def _to_agent_response(outcome: AgentOutcome) -> AgentResponse:
+    return AgentResponse(
+        text=outcome.text,
+        response_type=outcome.response_type,
+        image_path=outcome.image_path,
+        token_usage=outcome.token_usage,
+        should_send=outcome.should_send,
+        tool_calls=outcome.tool_calls,
+        terminal_reason=outcome.terminal_reason,
+    )
 
-        return {
-            "event_text": event["text"],
-            "knowledge_query": str(last_search_data.get("knowledge_query", "") or "").strip(),
-            "knowledge_query_raw": str(
-                last_search_data.get("knowledge_query_raw", "") or ""
-            ).strip(),
-            "matched_count": matched_count,
-            "matched_paths": matched_paths,
-            "candidate_details": candidate_details[:5],
-            "confidence": self._extract_float(
-                last_search_data.get("confidence"),
-                default=0.0,
-            ),
-            "score_margin": self._extract_float(
-                last_search_data.get("score_margin"),
-                default=0.0,
-            ),
-            "read_count": len(read_paths),
-            "read_paths": read_paths,
-            "successful_read_count": len(successful_read_paths),
-            "successful_read_paths": successful_read_paths,
-            "web_search_count": len(web_records),
-            "web_search_queries": web_queries,
-            "web_search_result_count": web_result_count,
-            "successful_web_search_count": successful_web_count,
-            "web_grounded": web_grounded,
-            "answer_grounded": answer_grounded,
-            "fallback_reason": fallback_reason,
-            "final_response_has_text": bool((final_text or "").strip()),
-            "final_response_preview": (final_text or "").strip()[:120],
-            "content_chars": total_content_chars,
-        }
 
-    def _extract_int(self, value: object, *, default: int = 0) -> int:
-        try:
-            return int(value)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return default
+def _build_knowledge_classifier(
+    dependencies: ToolDependencies | None,
+) -> Callable[[str], bool] | None:
+    if dependencies is None:
+        return None
 
-    def _extract_float(self, value: object, *, default: float = 0.0) -> float:
-        try:
-            return float(value)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return default
+    def _classify(text: str) -> bool:
+        plan = build_kb_query_plan(text, kb_root=dependencies.kb_root)
+        return bool(plan.entity_terms or plan.mechanic_terms or plan.upgrade_terms)
 
-    def _extract_string_list(self, value: object) -> list[str]:
-        if not isinstance(value, list):
-            return []
-        result: list[str] = []
-        for item in value:
-            text = str(item or "").strip()
-            if text:
-                result.append(text)
-        return result
+    return _classify
 
-    def _safe_parse_json_object(self, raw: str) -> dict[str, object]:
-        text = (raw or "").strip()
-        if not text:
-            return {}
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start == -1 or end == -1 or end <= start:
-                return {}
-            try:
-                payload = json.loads(text[start : end + 1])
-            except json.JSONDecodeError:
-                return {}
-        return payload if isinstance(payload, dict) else {}
+
+# Historical public import retained without keeping the old implementation.
+AgentRunner = Agent

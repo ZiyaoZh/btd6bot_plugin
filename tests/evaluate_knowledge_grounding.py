@@ -19,7 +19,7 @@ from bot_app.llm_client import LLMResponse  # noqa: E402
 from bot_app.memory import GroupChatMemory  # noqa: E402
 from bot_app.protocol import EventPayload  # noqa: E402
 from bot_app.settings import AppSettings  # noqa: E402
-from bot_app.tools import ToolRuntime  # noqa: E402
+from bot_app.tools import ToolDependencies  # noqa: E402
 from evaluate_knowledge_search import DEFAULT_CASE_FILE, load_cases  # noqa: E402
 
 
@@ -46,7 +46,9 @@ class GroundingEvalResult:
 
 
 class EvalDb:
-    def get_recent_group_messages(self, group_id: str, limit: int) -> list[dict[str, Any]]:
+    def get_recent_group_messages(
+        self, group_id: str, limit: int
+    ) -> list[dict[str, Any]]:
         return []
 
 
@@ -69,20 +71,9 @@ class DeterministicKnowledgeLLM:
     async def chat_completion(self, **kwargs: Any) -> LLMResponse:
         self.requests.append(kwargs)
         purpose = str(kwargs.get("purpose", "") or "")
-        if purpose == "agent_planning":
-            content = json.dumps(
-                {
-                    "decision": "final",
-                    "reason": "deterministic evaluator lets AgentRunner hard rules drive knowledge tools",
-                    "draft_reply": "",
-                    "tool_calls": [],
-                },
-                ensure_ascii=False,
-            )
-        elif purpose == "agent_rendering":
-            content = self._render_from_tool_results(kwargs)
-        else:
+        if purpose != "agent_turn":
             raise AssertionError(f"unexpected LLM purpose: {purpose}")
+        content = self._render_from_tool_results(kwargs)
 
         return LLMResponse(
             content=content,
@@ -95,25 +86,40 @@ class DeterministicKnowledgeLLM:
 
     def _render_from_tool_results(self, kwargs: dict[str, Any]) -> str:
         messages = kwargs.get("messages", [])
-        payload: dict[str, Any] = {}
-        if messages:
+        for message in reversed(messages):
             try:
-                payload = json.loads(str(messages[-1].get("content", "") or "{}"))
+                payload = json.loads(str(message.get("content", "") or "{}"))
             except json.JSONDecodeError:
-                payload = {}
-
-        read_results = [
-            item
-            for item in payload.get("tool_results", [])
-            if isinstance(item, dict) and item.get("name") == "read_game_knowledge_file"
-        ]
-        for item in read_results:
-            result = item.get("result", {}) if isinstance(item, dict) else {}
-            data = result.get("data", {}) if isinstance(result, dict) else {}
-            content = str(data.get("content", "") or "").strip()
-            if result.get("ok", False) and content:
-                return f"基于知识库片段回答：{content[:160]}"
+                continue
+            if message.get("role") == "tool":
+                rendered = self._render_read_result(message.get("name"), payload)
+                if rendered:
+                    return rendered
+            if (
+                message.get("role") == "user"
+                and isinstance(payload, dict)
+                and payload.get("kind") == "harness_tool_observations"
+            ):
+                for item in reversed(payload.get("results", [])):
+                    if not isinstance(item, dict):
+                        continue
+                    rendered = self._render_read_result(
+                        item.get("name"), item.get("result", {})
+                    )
+                    if rendered:
+                        return rendered
         return "没有可用知识库证据，不能确认结论。"
+
+    @staticmethod
+    def _render_read_result(name: object, result: object) -> str:
+        if name != "read_game_knowledge_file" or not isinstance(result, dict):
+            return ""
+        data = result.get("data", {})
+        data = data if isinstance(data, dict) else {}
+        content = str(data.get("content", "") or "").strip()
+        if result.get("ok", False) and content:
+            return f"基于知识库片段回答：{content[:160]}"
+        return ""
 
 
 def make_settings() -> AppSettings:
@@ -148,18 +154,17 @@ def make_event(text: str) -> EventPayload:
 
 
 def make_runner(llm: DeterministicKnowledgeLLM) -> AgentRunner:
-    runtime = ToolRuntime.create(
+    dependencies = ToolDependencies.create(
         db=EvalDb(),
         plugin_root=PLUGIN_ROOT,
         manual_file=PLUGIN_ROOT / "manuals" / "program_manual.md",
-        command_guide_dir=PLUGIN_ROOT / "command_skills",
     )
     return AgentRunner(
         llm=llm,  # type: ignore[arg-type]
         memory=GroupChatMemory(history_turns=2),
         settings=make_settings(),
-        tool_registry=ToolRegistry(runtime),
-        tool_runtime=runtime,
+        tool_registry=ToolRegistry(dependencies),
+        tool_dependencies=dependencies,
         context_manager=EvalContextManager(),  # type: ignore[arg-type]
     )
 
@@ -183,8 +188,16 @@ async def evaluate_query(query: str, expected_first: str) -> GroundingEvalResult
         query=query,
         expected_first=expected_first,
         tool_names=[record.name for record in response.tool_calls],
-        search_count=sum(1 for record in response.tool_calls if record.name == "search_game_knowledge"),
-        read_count=sum(1 for record in response.tool_calls if record.name == "read_game_knowledge_file"),
+        search_count=sum(
+            1
+            for record in response.tool_calls
+            if record.name == "search_game_knowledge"
+        ),
+        read_count=sum(
+            1
+            for record in response.tool_calls
+            if record.name == "read_game_knowledge_file"
+        ),
         successful_read_count=int(summary.get("successful_read_count", 0) or 0),
         matched_count=int(summary.get("matched_count", 0) or 0),
         first_matched_file=matched_paths[0] if matched_paths else "",
@@ -195,16 +208,16 @@ async def evaluate_query(query: str, expected_first: str) -> GroundingEvalResult
         metadata_present=bool(read_metadata),
         metadata_title=str(read_metadata.get("title", "") or ""),
         metadata_tags=[
-            str(item)
-            for item in read_metadata.get("tags", [])
-            if str(item).strip()
+            str(item) for item in read_metadata.get("tags", []) if str(item).strip()
         ],
         metadata_detected_fields=[
             str(item)
             for item in read_metadata.get("detected_fields", [])
             if str(item).strip()
         ],
-        rendered=any(request.get("purpose") == "agent_rendering" for request in llm.requests),
+        rendered=any(
+            request.get("purpose") == "agent_turn" for request in llm.requests
+        ),
         response_preview=response.text[:160],
     )
 
@@ -240,7 +253,9 @@ async def build_report(case_file: Path, *, limit: int) -> dict[str, Any]:
     )
     metadata_count = sum(1 for item in results if item.metadata_present)
     metadata_title_count = sum(1 for item in results if item.metadata_title)
-    paragraph_extract_count = sum(1 for item in results if item.read_mode == "paragraph_extract")
+    paragraph_extract_count = sum(
+        1 for item in results if item.read_mode == "paragraph_extract"
+    )
     paragraph_result_count = sum(1 for item in results if item.paragraph_count > 0)
     return {
         "knowledge_query_count": total,
@@ -258,7 +273,9 @@ async def build_report(case_file: Path, *, limit: int) -> dict[str, Any]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate end-to-end knowledge grounding")
+    parser = argparse.ArgumentParser(
+        description="Evaluate end-to-end knowledge grounding"
+    )
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASE_FILE)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--json", action="store_true")

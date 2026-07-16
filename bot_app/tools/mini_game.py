@@ -3,19 +3,19 @@ from __future__ import annotations
 from typing import Any
 
 from ..protocol import CommandResultPayload, EventPayload
-from .base import ConcreteTool, ToolRuntime, object_schema
+from .base import ConcreteTool, ToolDependencies, object_schema
 from .mini_game_service import build_monkey_box_opening_result
 
 
-def build_mini_game_tools(runtime: ToolRuntime) -> list[ConcreteTool]:
+def build_mini_game_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
     async def simulate_monkey_box_opening(
         arguments: dict[str, Any], event: EventPayload
     ) -> CommandResultPayload:
         return await build_monkey_box_opening_result(
-            chat_monkey_root=runtime.chat_monkey_root,
+            chat_monkey_root=dependencies.chat_monkey_root,
             arguments=arguments,
             module="tool.mini_game",
-            subprocess_runner=runtime.subprocess_runner,
+            subprocess_runner=dependencies.subprocess_runner,
         )
 
     return [

@@ -15,6 +15,17 @@ from .settings import AppSettings
 class LLMRequestError(RuntimeError):
     """Raised when a request to LLM backend fails."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = True,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.status_code = status_code
+
 
 @dataclass(frozen=True)
 class LLMToolCall:
@@ -93,6 +104,20 @@ class LLMClient:
                     )
                 except LLMRequestError as exc:
                     last_error = exc
+                    if not exc.retryable:
+                        if trace_id:
+                            log_flow(
+                                stage="llm.retry_skipped",
+                                trace_id=trace_id,
+                                purpose=purpose,
+                                model=model,
+                                model_index=model_index,
+                                model_count=len(models),
+                                status_code=exc.status_code,
+                                reason="non_retryable_error",
+                                error=str(exc),
+                            )
+                        break
                     if trace_id:
                         log_flow(
                             stage="llm.retry",
@@ -248,7 +273,11 @@ class LLMClient:
                     error_code=exc.code,
                     detail=detail,
                 )
-            raise LLMRequestError(f"LLM 接口 HTTP 错误: {exc.code} {detail}") from exc
+            raise LLMRequestError(
+                f"LLM 接口 HTTP 错误: {exc.code} {detail}",
+                retryable=_is_retryable_http_status(exc.code),
+                status_code=exc.code,
+            ) from exc
         except error.URLError as exc:
             if trace_id:
                 log_flow(
@@ -329,9 +358,16 @@ class LLMClient:
     ) -> dict[str, Any]:
         normalized = {
             "role": "assistant",
-            "content": assistant_message.get("content") or "",
+            "content": assistant_message.get("content", ""),
         }
         tool_calls = assistant_message.get("tool_calls", [])
         if isinstance(tool_calls, list) and tool_calls:
             normalized["tool_calls"] = tool_calls
+        for field in ("reasoning_content", "reasoning", "reasoning_details"):
+            if field in assistant_message:
+                normalized[field] = assistant_message[field]
         return normalized
+
+
+def _is_retryable_http_status(status_code: int) -> bool:
+    return status_code in {408, 409, 425, 429} or status_code >= 500

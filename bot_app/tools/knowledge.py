@@ -3,19 +3,19 @@ from __future__ import annotations
 from typing import Any
 
 from ..protocol import CommandResultPayload, EventPayload
-from .base import ConcreteTool, ToolRuntime, object_schema
+from .base import ConcreteTool, ToolDependencies, object_schema
 from .knowledge_service import (
     build_read_game_knowledge_file_result,
     build_search_game_knowledge_result,
 )
 
 
-def build_knowledge_tools(runtime: ToolRuntime) -> list[ConcreteTool]:
+def build_knowledge_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
     async def search_game_knowledge(
         arguments: dict[str, Any], event: EventPayload
     ) -> CommandResultPayload:
         return build_search_game_knowledge_result(
-            kb_root=runtime.kb_root,
+            kb_root=dependencies.kb_root,
             event=event,
             arguments=arguments,
             module="tool.knowledge",
@@ -25,7 +25,7 @@ def build_knowledge_tools(runtime: ToolRuntime) -> list[ConcreteTool]:
         arguments: dict[str, Any], event: EventPayload
     ) -> CommandResultPayload:
         return build_read_game_knowledge_file_result(
-            kb_root=runtime.kb_root,
+            kb_root=dependencies.kb_root,
             arguments=arguments,
             module="tool.knowledge",
         )

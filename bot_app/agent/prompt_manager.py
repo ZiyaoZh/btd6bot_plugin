@@ -23,78 +23,23 @@ class PromptManager:
             ensure_ascii=False,
         )
         policy_hints = build_policy_hints_context()
+        tool_hints = (self._settings.router_tool_hints_prompt or "").strip()
+        tool_hint_block = f"工具选择参考:\n{tool_hints}" if tool_hints else ""
         return "\n\n".join(
-            [
+            item
+            for item in [
                 self._settings.system_prompt.strip(),
                 (
-                    "你正在群聊中工作。主链路已经拆成 planning 和 rendering 两阶段。"
-                    "这里的系统提示词只负责稳定人格、通用边界和群聊场景约束，不直接决定工具选择细节。"
-                    "总原则：能直接回答就直接回答；需要事实就依赖工具；信息不足时只问一个关键问题；不要编造。"
+                    "你正在群聊中工作，并通过系统提供的原生 tools 获取事实和执行能力。"
+                    "需要事实、实时资料或程序能力时直接调用真实工具，不要在正文中伪造工具调用，也不要输出 JSON 决策协议。"
+                    "工具返回后，根据 observation 判断是否继续调用工具；证据足够时直接输出最终纯文本。"
+                    "普通群聊没有明确指向机器人或用户要求不要回复时，调用 ignore_message。"
+                    "总原则：能可靠直接回答就回答；需要事实就依赖工具；信息不足时只问一个关键问题；不要编造。"
+                    "BTD6 游戏知识必须先检索知识库，命中后读取候选文件；Harness 会确定性执行这一证据规则。"
                 ),
+                tool_hint_block,
                 f"策略提示: {json.dumps(policy_hints, ensure_ascii=False)}",
                 f"当前事件上下文: {event_context}",
             ]
-        )
-
-    def build_planning_prompt(self, event: EventPayload) -> str:
-        del event
-        hints = (self._settings.router_tool_hints_prompt or "").strip()
-        hint_block = ""
-        if hints:
-            hint_block = (
-                "\n\n常见问题到工具类别/能力的映射参考如下，请在 decision=call_tools 时优先遵循：\n"
-                f"{hints}"
-            )
-        return "\n\n".join(
-            [
-                self._settings.system_prompt.strip(),
-                (
-                    "你是群聊机器人决策器。你的任务只包括：是否忽略、是否直接回复、是否调用工具、"
-                    "以及在拿到工具结果后是否已经足够进入最终表达。"
-                    "你必须只输出 JSON，不要输出解释文本，不要输出 Markdown。"
-                    "JSON 字段固定为：decision, reason, draft_reply, tool_calls。"
-                    "decision 只能是 ignore、reply_direct、call_tools、final。"
-                    "tool_calls 必须是数组，每项包含 name 和 arguments。"
-                    "tool_calls.name 必须是系统里真实存在的工具名，例如 search_game_knowledge、read_game_knowledge_file、search_web、list_features；"
-                    "不要输出 game_knowledge、game_news、script_manual 这类能力类别名。"
-                    "规则分层如下："
-                    "A. ignore 规则：消息没有明确指向机器人、没有任务诉求、只是群友闲聊时，用 decision=ignore；"
-                    "如果当前消息明确 @ 机器人，除非用户明确要求闭嘴/停止回复，否则不要 ignore。"
-                    "B. 闲聊规则：简单寒暄、陪聊、轻问轻答且不需要事实检索时，用 decision=reply_direct，draft_reply 保持简短自然。"
-                    "C. 工具规则：涉及 BTD6 活动、排行榜、知识库、脚本说明书、群聊总结、活跃榜、开箱模拟等事实信息时，用 decision=call_tools。"
-                    "当已有工具结果无结果、失败、信息可能过时，或用户问题需要当前公开网页资料、新闻公告、产品服务资料、教程攻略、一般资料查证时，可以调用 search_web 作为备用证据路径；"
-                    "不要在已有可靠工具结果时无谓联网。"
-                    "调用 search_web 或基于搜索结果回答时，必须遵守法律法规限制：不得帮助用户实施违法违规、规避监管、侵犯隐私、侵权盗版、危险行为或其他法律法规禁止事项；"
-                    "遇到这类请求，应拒绝操作性指导，并给出合法合规的替代方向。"
-                    "D. 完成规则：如果现有工具结果已经足够回答，就用 decision=final。"
-                    "E. 知识库硬规则：BTD6 游戏知识问题必须先调用 search_game_knowledge；"
-                    "若 matched_count>0，必须至少调用一次 read_game_knowledge_file 后才能 final；"
-                    "若 matched_count=0，可以先调用 search_web 尝试查找公开网页证据；"
-                    "如果没有调用 search_web 或 search_web 也无结果，final 时必须明确说明知识库未命中，不要凭印象补充事实结论。"
-                    "同一轮如果需要多个工具，可以一次返回多个 tool_calls。"
-                    "只做决策，不负责最终文风润色。"
-                )
-                + hint_block,
-            ]
-        )
-
-    def build_rendering_prompt(self, event: EventPayload) -> str:
-        del event
-        return "\n\n".join(
-            [
-                self._settings.system_prompt.strip(),
-                (
-                    "你是群聊机器人表达器。请根据给定的 planning_result、reply_context 和 tool_results 生成最终回复。"
-                    "优先遵循 tool_results 中汇总的 extra_prompt。"
-                    "表达规则分层如下："
-                    "A. 闲聊型回答：保持短，一两句即可，自然像群友。"
-                    "B. 工具事实回答：信息要完整，优先回答用户真正的问题，不要被“闲聊要短”规则压扁。"
-                    "C. 失败兜底：如果工具失败，直接说明失败原因并给出一个可执行下一步。"
-                    "不要编造工具结果中没有的信息。"
-                    "法律法规限制：不得把搜索结果用于提供违法违规、规避监管、侵犯隐私、侵权盗版、危险行为或其他法律法规禁止事项的操作性指导；"
-                    "涉及法律、医疗、金融、安全等高风险主题时，只能给一般信息，并提醒以官方渠道或专业人士意见为准。"
-                    "输出只使用纯文本，不要 Markdown、代码块、JSON、工具名或文件路径。"
-                    "中文、自然、简洁，适合直接发到群里。"
-                ),
-            ]
+            if item
         )

@@ -159,4 +159,8 @@ class GroupMessageReceiver:
             return "proactive_on"
         if t in {"关闭主动接话", "停止主动接话"}:
             return "proactive_off"
+        if t in {"开启模型过程", "打开模型过程", "开启过程消息", "打开过程消息"}:
+            return "model_turns_on"
+        if t in {"关闭模型过程", "停止模型过程", "关闭过程消息", "停止过程消息"}:
+            return "model_turns_off"
         return ""

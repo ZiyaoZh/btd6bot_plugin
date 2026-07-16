@@ -73,6 +73,13 @@ _FEATURE_CATALOG: list[dict[str, Any]] = [
         "examples": ["联网搜索某产品最新公告", "网页搜索 BTD6 最新版本削弱"],
     },
     {
+        "name": "generate_image",
+        "aliases": ["画图", "生图", "生成图片", "制作插图"],
+        "description": "根据文字提示生成并发送一张图片",
+        "arguments": {"prompt": "完整的图片描述"},
+        "examples": ["画一张雨夜霓虹城市", "生成一张可爱的猴子头像"],
+    },
+    {
         "name": "simulate_monkey_box_opening",
         "aliases": ["open_monkey_box", "game_box_opening", "开箱模拟", "收集开箱"],
         "description": "模拟 BTD6 开箱并返回统计文档，箱子数量 <=50 时额外返回图片",
