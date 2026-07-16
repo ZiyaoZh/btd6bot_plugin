@@ -14,6 +14,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT))
 
 from bot_app.agent.tool_registry import ToolRegistry  # noqa: E402
+from bot_app.image_prompting import MAX_IMAGE_PROMPT_CHARS  # noqa: E402
 from bot_app.settings import load_settings  # noqa: E402
 from bot_app.tools import ToolDependencies  # noqa: E402
 from bot_app.tools.image_generation_service import (  # noqa: E402
@@ -95,6 +96,11 @@ class ImageGenerationToolTests(unittest.IsolatedAsyncioTestCase):
                         "IMAGE_GEN_RETRY_DELAY_SECONDS=1.5",
                         "IMAGE_GEN_USE_PROXY=false",
                         "IMAGE_GEN_MAX_BYTES=1048576",
+                        "BOT_ARTIFACT_ROOT=data/custom_artifacts",
+                        "BOT_ARTIFACT_ACTIVITY_TTL_SECONDS=300",
+                        "BOT_ARTIFACT_IMAGE_TTL_SECONDS=7200",
+                        "BOT_ARTIFACT_DEFAULT_TTL_SECONDS=1800",
+                        "BOT_ARTIFACT_ARCHIVE_RETENTION_SECONDS=3600",
                     ]
                 ),
                 encoding="utf-8",
@@ -113,6 +119,11 @@ class ImageGenerationToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(settings.image_gen_retry_delay_seconds, 1.5)
         self.assertFalse(settings.image_gen_use_proxy)
         self.assertEqual(settings.image_gen_max_bytes, 1048576)
+        self.assertEqual(settings.artifact_root, "data/custom_artifacts")
+        self.assertEqual(settings.artifact_activity_ttl_seconds, 300)
+        self.assertEqual(settings.artifact_image_ttl_seconds, 7200)
+        self.assertEqual(settings.artifact_default_ttl_seconds, 1800)
+        self.assertEqual(settings.artifact_archive_retention_seconds, 3600)
         self.assertGreaterEqual(settings.run_timeout_seconds, 427.5)
 
     def test_agent_schema_exposes_only_prompt(self) -> None:
@@ -129,6 +140,10 @@ class ImageGenerationToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(parameters["properties"]), {"prompt"})
         self.assertEqual(parameters["required"], ["prompt"])
         self.assertFalse(parameters["additionalProperties"])
+        self.assertEqual(
+            parameters["properties"]["prompt"]["maxLength"],
+            MAX_IMAGE_PROMPT_CHARS,
+        )
         serialized = str(tool)
         self.assertNotIn("secret-image-key", serialized)
         self.assertNotIn("private-image-model", serialized)
@@ -159,7 +174,12 @@ class ImageGenerationToolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["response_type"], "image")
-        self.assertEqual(result["image_path"], str(generated))
+        normalized_path = Path(result["image_path"])
+        self.assertEqual(normalized_path.name, "image.png")
+        self.assertIn("artifacts", normalized_path.parts)
+        self.assertIn("image_generated", normalized_path.parts)
+        self.assertTrue(result["data"]["stored_as_artifact"])
+        self.assertTrue(result["data"]["artifact_id"])
         self.assertNotIn("api_key", result["data"])
         self.assertNotIn("model", result["data"])
         self.assertEqual(generate.call_args.kwargs["api_key"], "secret-image-key")
@@ -171,6 +191,46 @@ class ImageGenerationToolTests(unittest.IsolatedAsyncioTestCase):
             generate.call_args.kwargs["api_base_url"],
             "https://images.example/v1",
         )
+        effective_prompt = generate.call_args.kwargs["prompt"]
+        self.assertIn("[结构化生图任务 v2]", effective_prompt)
+        self.assertIn("核心画面：夕阳下的山谷，电影感构图", effective_prompt)
+        self.assertIn("画一张日落", effective_prompt)
+
+    async def test_generated_image_is_listed_and_can_be_reused_by_agent_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            generated = root / "generated.png"
+            generated.write_bytes(PNG_BYTES)
+            registry = ToolRegistry(_dependencies(root))
+
+            with patch(
+                "bot_app.tools.image.generate_image_file",
+                return_value=generated,
+            ) as generate:
+                generated_result = await registry.execute(
+                    "generate_image",
+                    {"prompt": "夕阳下的山谷，电影感构图"},
+                    _event(),  # type: ignore[arg-type]
+                )
+                catalog = await registry.execute(
+                    "list_artifacts",
+                    {},
+                    _event(),  # type: ignore[arg-type]
+                )
+                artifact_id = catalog["data"]["artifacts"][0]["artifact_id"]
+                reused = await registry.execute(
+                    "read_artifact",
+                    {"artifact_id": artifact_id, "role": "image"},
+                    _event(),  # type: ignore[arg-type]
+                )
+
+        generate.assert_called_once()
+        self.assertTrue(generated_result["data"]["stored_as_artifact"])
+        self.assertEqual(catalog["data"]["artifact_count"], 1)
+        self.assertEqual(catalog["data"]["artifacts"][0]["title"], "画一张日落")
+        self.assertIn("生成", catalog["data"]["catalog_text"])
+        self.assertTrue(reused["data"]["reused"])
+        self.assertEqual(generated_result["image_path"], reused["image_path"])
 
     async def test_unconfigured_tool_fails_without_exposing_config_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

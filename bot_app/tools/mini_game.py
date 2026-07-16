@@ -16,13 +16,18 @@ def build_mini_game_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
             arguments=arguments,
             module="tool.mini_game",
             subprocess_runner=dependencies.subprocess_runner,
+            output_dir=dependencies.plugin_root / "data" / "tool_outputs" / "mini_game",
         )
 
     return [
         ConcreteTool(
             spec={
                 "name": "simulate_monkey_box_opening",
-                "description": "模拟 BTD6 收集活动开箱并返回统计；箱子数量不超过 50 时额外生成图片。",
+                "description": (
+                    "实时模拟一次新的 BTD6 收集活动开箱并返回统计；"
+                    "每次调用都会实际运行游戏工具，不复用产物清单。"
+                    "箱子数量不超过 50 时额外生成图片。"
+                ),
                 "parameters": object_schema(
                     {
                         "box_type": {

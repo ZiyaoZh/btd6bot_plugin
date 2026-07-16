@@ -1,3 +1,5 @@
+from .image_policy import ImageGenerationPolicy, classify_image_request
+from .policies import CompositePolicy, GroundingPolicy
 from .runtime import AgentHarness
 from .run_store import InMemoryRunStore, RunRecord
 from .sessions import SessionLockManager
@@ -15,6 +17,9 @@ from .types import (
 __all__ = [
     "AgentHarness",
     "AgentOutcome",
+    "CompositePolicy",
+    "GroundingPolicy",
+    "ImageGenerationPolicy",
     "InMemoryRunStore",
     "ModelTurnHandler",
     "ModelTurnUpdate",
@@ -25,4 +30,5 @@ __all__ = [
     "SessionLockManager",
     "ToolExecutor",
     "ToolInvocation",
+    "classify_image_request",
 ]

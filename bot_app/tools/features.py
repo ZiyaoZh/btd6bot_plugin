@@ -11,6 +11,20 @@ _FEATURE_CATALOG: list[dict[str, Any]] = [
         "examples": ["list", "功能列表", "命令列表"],
     },
     {
+        "name": "list_artifacts",
+        "aliases": ["产物清单", "已有产物", "历史报告", "历史图片"],
+        "description": "查看当前未过期的 Agent 产物及其标题、标签、日期和文件角色",
+        "arguments": {"kind": "可选产物类型", "limit": "最多返回项数"},
+        "examples": ["看看已有产物", "列出最近生成的图片"],
+    },
+    {
+        "name": "read_artifact",
+        "aliases": ["读取产物", "取用产物"],
+        "description": "读取产物文档或直接发送已有图片",
+        "arguments": {"artifact_id": "产物 ID", "role": "report|image|data"},
+        "examples": ["读取这个活动报告", "发送这张已有图片"],
+    },
+    {
         "name": "today_most_active",
         "aliases": ["今日活跃榜", "谁最活跃"],
         "description": "统计今天群里最活跃的成员",
@@ -82,7 +96,7 @@ _FEATURE_CATALOG: list[dict[str, Any]] = [
     {
         "name": "simulate_monkey_box_opening",
         "aliases": ["open_monkey_box", "game_box_opening", "开箱模拟", "收集开箱"],
-        "description": "模拟 BTD6 开箱并返回统计文档，箱子数量 <=50 时额外返回图片",
+        "description": "实时运行一次新的 BTD6 开箱模拟并返回统计，不进入可复用产物清单；箱子数量 <=50 时额外返回图片",
         "arguments": {"box_type": "木头|青铜|白银|黄金|钻石", "box_count": "正整数"},
         "examples": ["开 10 个钻石箱", "模拟青铜箱 30 个"],
     },

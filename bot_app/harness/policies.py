@@ -5,7 +5,30 @@ from uuid import uuid4
 
 from ..agent.types import ToolCallRecord
 from ..protocol import EventPayload
-from .types import ToolInvocation
+from .types import RunPolicy, ToolInvocation
+
+
+class CompositePolicy:
+    """Apply independent hard policies in deterministic priority order."""
+
+    def __init__(self, *policies: RunPolicy) -> None:
+        self._policies = tuple(policies)
+
+    def required_tool_calls(
+        self, event: EventPayload, records: list[ToolCallRecord]
+    ) -> list[ToolInvocation]:
+        for policy in self._policies:
+            required = policy.required_tool_calls(event, records)
+            if required:
+                return required
+        return []
+
+    def final_override(self, event: EventPayload, records: list[ToolCallRecord]) -> str:
+        for policy in self._policies:
+            override = policy.final_override(event, records)
+            if override:
+                return override
+        return ""
 
 
 class GroundingPolicy:

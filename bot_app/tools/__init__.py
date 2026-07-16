@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .activity import build_activity_tools
+from .artifact import build_artifact_tools
 from .base import (
     ConcreteTool,
     ToolDependencies,
@@ -25,6 +26,7 @@ __all__ = [
     "normalize_result",
     "ok_result",
     "build_activity_tools",
+    "build_artifact_tools",
     "build_general_tools",
     "build_image_tools",
     "build_knowledge_tools",

@@ -13,7 +13,9 @@
 - 原生工具调用：Model 通过 OpenAI Chat Completions `tools/tool_calls` 直接调用结构化工具，Harness 负责校验和执行。
 - 多轮工具编排：支持在一次对话中连续调用多个工具指令，例如先检索知识库，再读取候选文件。
 - 群聊降噪：无须回复的群聊消息通过 `ignore_message` 工具显式忽略。
-- AI 生图：Agent 只提交 `prompt`，服务端使用私有的接口地址、密钥和模型配置生成并发送图片。
+- AI 生图：明确的独立生图请求由 Harness 保证调用图片工具；短提示词在服务端补全，私有接口地址、密钥和模型配置不会暴露给 Agent。
+- 活动情报图：竞速、Boss、征程、每日挑战情报图会先查询真实活动详情，再把名称、时间、地图/模式、规则和限制注入信息优先的生图提示词，避免退化成大幅插画。
+- Agent 产物目录：活动报告、排行榜、收集活动图片和 AI 图片统一进入 `data/artifacts/`；当前有效清单会直接提供给模型，由模型结合标题、摘要、标签和日期判断是否复用。
 - BTD6 游戏能力：
 	- 游戏知识检索与安全文件读取。
 	- 活动详情查询（race/boss/odyssey/daily）。
@@ -56,6 +58,7 @@ event -> context -> model -> tool call -> validate/execute -> observation
 ## 目录结构
 
 - `bot_app/application.py`: 渠道无关的生成、发送和记忆提交事务。
+- `bot_app/artifact_store.py`: Agent 产物的统一目录、SQLite 标签索引与生命周期管理。
 - `bot_app/bootstrap.py`: 插件与独立入口共享的唯一 composition root。
 - `bot_app/agent/`: Agent 对外门面、instructions、工具目录与响应类型。
 - `bot_app/model/`: 模型供应商协议与 OpenAI-compatible Chat Completions adapter。
@@ -117,9 +120,30 @@ daily_activity_brief:
 - `BOT_MAX_TOOL_RESULT_CHARS`: 注入模型上下文的单个工具结果最大字符数，默认 60000。
 - `BOT_RUN_TIMEOUT_SECONDS`: 单个 Agent Run 总超时，默认 120 秒。
 
+## 产物索引与生命周期
+
+Agent 产生的可复用文件统一保存在 `data/artifacts/`，不再由各工具长期散落到自己的输出目录：
+
+- `index.db`: 产物标题、摘要、标签、文件角色、访问次数和生命周期时间的 SQLite 索引。
+- `active/<kind>/<artifact_id>/`: 未过期、可直接复用的产物。
+- `archive/<kind>/<artifact_id>/`: 已过期但仍处于保留期的存档。
+- `.staging/`: 外部命令和生图服务的临时输出，登记后会迁入 `active/`。
+
+每轮 Agent 请求的系统上下文都会附带一份精简的未过期产物清单，其中包含 `artifact_id`、易读标题、摘要、标签、生成时间、过期时间和文件路径。模型根据用户语义自行判断是否相关，不要求标签完全一致。需要查看更多条目时调用 `list_artifacts`；选中条目后调用 `read_artifact`，文档会返回正文，图片会直接进入现有图片发送链路。只有清单中没有合适内容时，模型才调用活动获取、生图或其他生成工具。
+
+业务工具只负责登记新产物，不在内部按标签偷偷替模型做精确缓存命中。过期产物会在启动或后续产物访问时自动移入 `archive/`，超过存档保留期后删除文件及索引记录。
+
+模拟开箱是实时随机游戏执行，明确排除在产物目录之外。每次请求都会实际运行 `ChatMonkeyTD` 生成新报告和图片，输出统一放在 `data/tool_outputs/mini_game/`，不会写入 `index.db` 或出现在模型的有效产物清单中；超过一天的旧开箱输出会在后续模拟时自动清理。
+
+- `BOT_ARTIFACT_ROOT`: 统一产物根目录，默认 `data/artifacts`。
+- `BOT_ARTIFACT_ACTIVITY_TTL_SECONDS`: 活动报告和图片有效期，默认 600 秒。
+- `BOT_ARTIFACT_IMAGE_TTL_SECONDS`: AI 图片有效期，默认 604800 秒（7 天）。
+- `BOT_ARTIFACT_DEFAULT_TTL_SECONDS`: 其他产物默认有效期，默认 86400 秒（1 天）。
+- `BOT_ARTIFACT_ARCHIVE_RETENTION_SECONDS`: 过期后的存档保留期，默认 604800 秒（7 天）；设为 `0` 时在归档维护周期内直接清理。
+
 ## AI 生图配置
 
-`generate_image` 使用 OpenAI-compatible Images API。Agent 可见的工具参数只有 `prompt`；以下配置只在服务端读取，不会出现在工具 schema 或工具结果中：
+`generate_image` 使用 OpenAI-compatible Images API。Agent 可见的工具参数只有 `prompt`；Harness 和工具服务会对短提示词做确定性增强。普通创意图补全主体、构图、场景和光线，信息图要求事实内容占主导、插画装饰不超过画面四分之一。以下配置只在服务端读取，不会出现在工具 schema 或工具结果中：
 
 - `IMAGE_GEN_API_BASE_URL`: 接口根地址，例如 `https://api.openai.com/v1`。也可直接填写以 `/images/generations` 结尾的完整地址。
 - `IMAGE_GEN_API_KEY`: 生图接口密钥。
@@ -130,7 +154,7 @@ daily_activity_brief:
 - `IMAGE_GEN_USE_PROXY`: 是否继承进程的 `HTTP_PROXY`/`HTTPS_PROXY`，默认 `false`。设为 `false` 时，生图请求及返回图片下载使用独立直连会话，不影响 LLM、网页搜索、QQ 或其他网络请求的代理设置。
 - `IMAGE_GEN_MAX_BYTES`: 单张返回图片的最大字节数，默认 20 MiB。
 
-接口响应支持 `data[0].b64_json`、`data[0].url` 或 Base64 data URL。图片保存在 `data/generated_images/`，随后通过现有图片发送链路发送。连接失败、超时、HTTP 429、服务端 5xx、临时无效响应和图片下载失败会自动重试；鉴权失败、普通 4xx 请求拒绝、非法地址和图片超限不会重试。生图工具会按单次超时、重试次数与退避时间计算独立的 Harness 超时，不影响其他工具；`BOT_RUN_TIMEOUT_SECONDS` 会在配置加载时自动保证覆盖这段预算并额外预留 60 秒供模型生成最终回复。部署环境通过 SSH/Privoxy 提供全局代理时，保持 `IMAGE_GEN_USE_PROXY=false` 可避免生图请求受到代理层短超时限制。
+接口响应支持 `data[0].b64_json`、`data[0].url` 或 Base64 data URL。图片先写入 `data/artifacts/.staging/`，登记后迁入统一活跃产物目录并通过现有图片发送链路发送；后续模型可以在有效产物清单中看到图片的标题、摘要、标签和日期，并通过 `read_artifact` 主动复用。连接失败、超时、HTTP 429、服务端 5xx、临时无效响应和图片下载失败会自动重试；鉴权失败、普通 4xx 请求拒绝、非法地址和图片超限不会重试。生图工具会按单次超时、重试次数与退避时间计算独立的 Harness 超时，不影响其他工具；`BOT_RUN_TIMEOUT_SECONDS` 会在配置加载时自动保证覆盖这段预算并额外预留 60 秒供模型生成最终回复。部署环境通过 SSH/Privoxy 提供全局代理时，保持 `IMAGE_GEN_USE_PROXY=false` 可避免生图请求受到代理层短超时限制。
 
 ## 纯插件启动配置
 

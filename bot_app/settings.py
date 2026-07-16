@@ -46,6 +46,11 @@ class AppSettings:
     image_gen_retry_delay_seconds: float = 2.0
     image_gen_use_proxy: bool = False
     image_gen_max_bytes: int = 20 * 1024 * 1024
+    artifact_root: str = "data/artifacts"
+    artifact_activity_ttl_seconds: float = 600.0
+    artifact_image_ttl_seconds: float = 7 * 86_400.0
+    artifact_default_ttl_seconds: float = 86_400.0
+    artifact_archive_retention_seconds: float = 7 * 86_400.0
 
 
 def _read_prompt_from_file(path: Path) -> str:
@@ -187,6 +192,31 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         "on",
     }
     image_gen_max_bytes = int(os.getenv("IMAGE_GEN_MAX_BYTES", str(20 * 1024 * 1024)))
+    artifact_root = (
+        os.getenv("BOT_ARTIFACT_ROOT", "data/artifacts").strip()
+        or "data/artifacts"
+    )
+    artifact_activity_ttl_seconds = max(
+        1.0,
+        float(os.getenv("BOT_ARTIFACT_ACTIVITY_TTL_SECONDS", "600")),
+    )
+    artifact_image_ttl_seconds = max(
+        1.0,
+        float(os.getenv("BOT_ARTIFACT_IMAGE_TTL_SECONDS", str(7 * 86_400))),
+    )
+    artifact_default_ttl_seconds = max(
+        1.0,
+        float(os.getenv("BOT_ARTIFACT_DEFAULT_TTL_SECONDS", "86400")),
+    )
+    artifact_archive_retention_seconds = max(
+        0.0,
+        float(
+            os.getenv(
+                "BOT_ARTIFACT_ARCHIVE_RETENTION_SECONDS",
+                str(7 * 86_400),
+            )
+        ),
+    )
 
     if all((image_gen_api_base_url, image_gen_api_key, image_gen_model)):
         image_execution_timeout = calculate_image_gen_execution_timeout(
@@ -235,4 +265,9 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         image_gen_retry_delay_seconds=image_gen_retry_delay_seconds,
         image_gen_use_proxy=image_gen_use_proxy,
         image_gen_max_bytes=max(1024, image_gen_max_bytes),
+        artifact_root=artifact_root,
+        artifact_activity_ttl_seconds=artifact_activity_ttl_seconds,
+        artifact_image_ttl_seconds=artifact_image_ttl_seconds,
+        artifact_default_ttl_seconds=artifact_default_ttl_seconds,
+        artifact_archive_retention_seconds=artifact_archive_retention_seconds,
     )

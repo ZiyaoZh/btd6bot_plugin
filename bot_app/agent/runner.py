@@ -4,7 +4,8 @@ from typing import Callable
 
 from ..context_manager import ContextManager
 from ..harness.context import ContextAssembler
-from ..harness.policies import GroundingPolicy
+from ..harness.image_policy import ImageGenerationPolicy
+from ..harness.policies import CompositePolicy, GroundingPolicy
 from ..harness.runtime import AgentHarness
 from ..harness.tool_executor import ToolExecutor
 from ..harness.types import AgentOutcome, ModelTurnHandler, RunRequest
@@ -42,10 +43,15 @@ class Agent:
         model: ModelGateway | None = None,
         tool_executor: ToolExecutor | None = None,
         grounding_policy: GroundingPolicy | None = None,
+        image_policy: ImageGenerationPolicy | None = None,
         harness: AgentHarness | None = None,
     ) -> None:
         self._grounding = grounding_policy or GroundingPolicy(
             query_classifier=_build_knowledge_classifier(tool_dependencies)
+        )
+        run_policy = CompositePolicy(
+            self._grounding,
+            image_policy or ImageGenerationPolicy(),
         )
         manager = context_manager or ContextManager(llm=llm, settings=settings)
         context = ContextAssembler(
@@ -63,8 +69,16 @@ class Agent:
                 timeout_seconds=settings.tool_timeout_seconds,
                 max_result_chars=settings.max_tool_result_chars,
             ),
-            prompts=prompt_manager or PromptManager(settings),
-            policy=self._grounding,
+            prompts=prompt_manager
+            or PromptManager(
+                settings,
+                artifact_store=(
+                    tool_dependencies.artifact_store
+                    if tool_dependencies is not None
+                    else None
+                ),
+            ),
+            policy=run_policy,
             max_tool_rounds=settings.max_tool_rounds,
             max_reply_chars=settings.max_reply_chars,
         )

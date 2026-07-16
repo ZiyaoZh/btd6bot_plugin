@@ -7,6 +7,7 @@ from ..tools import (
     ConcreteTool,
     ToolDependencies,
     build_activity_tools,
+    build_artifact_tools,
     build_general_tools,
     build_image_tools,
     build_knowledge_tools,
@@ -93,6 +94,7 @@ class ToolRegistry:
 
     def _build_tools(self) -> list[ConcreteTool]:
         return [
+            *build_artifact_tools(self._dependencies),
             *build_general_tools(self._dependencies),
             *build_image_tools(self._dependencies),
             *build_social_tools(self._dependencies),

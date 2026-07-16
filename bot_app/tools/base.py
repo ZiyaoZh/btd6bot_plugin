@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ..agent.types import ToolHandler, ToolSpec
+from ..artifact_store import ArtifactStore
 from ..protocol import CommandResultPayload
 
 DEFAULT_RESPONSE_TYPE = "text"
@@ -35,6 +36,11 @@ class ToolDependencies:
     image_gen_retry_delay_seconds: float = 2.0
     image_gen_use_proxy: bool = False
     image_gen_max_bytes: int = 20 * 1024 * 1024
+    artifact_store: ArtifactStore | None = None
+    artifact_activity_ttl_seconds: float = 600.0
+    artifact_image_ttl_seconds: float = 7 * 86_400.0
+    artifact_default_ttl_seconds: float = 86_400.0
+    artifact_archive_retention_seconds: float = 7 * 86_400.0
 
     @classmethod
     def create(
@@ -52,9 +58,24 @@ class ToolDependencies:
         image_gen_retry_delay_seconds: float = 2.0,
         image_gen_use_proxy: bool = False,
         image_gen_max_bytes: int = 20 * 1024 * 1024,
+        artifact_store: ArtifactStore | None = None,
+        artifact_root: str | Path = "data/artifacts",
+        artifact_activity_ttl_seconds: float = 600.0,
+        artifact_image_ttl_seconds: float = 7 * 86_400.0,
+        artifact_default_ttl_seconds: float = 86_400.0,
+        artifact_archive_retention_seconds: float = 7 * 86_400.0,
     ) -> ToolDependencies:
         root = plugin_root.resolve()
         resolved_manual_file = _resolve_under_root(root, manual_file)
+        default_ttl = max(1.0, float(artifact_default_ttl_seconds))
+        archive_retention = max(
+            0.0, float(artifact_archive_retention_seconds)
+        )
+        resolved_artifact_store = artifact_store or ArtifactStore(
+            _resolve_under_root(root, artifact_root),
+            default_ttl_seconds=default_ttl,
+            archive_retention_seconds=archive_retention,
+        )
         return cls(
             db=db,
             plugin_root=root,
@@ -74,6 +95,13 @@ class ToolDependencies:
             ),
             image_gen_use_proxy=bool(image_gen_use_proxy),
             image_gen_max_bytes=max(1024, int(image_gen_max_bytes)),
+            artifact_store=resolved_artifact_store,
+            artifact_activity_ttl_seconds=max(
+                1.0, float(artifact_activity_ttl_seconds)
+            ),
+            artifact_image_ttl_seconds=max(1.0, float(artifact_image_ttl_seconds)),
+            artifact_default_ttl_seconds=default_ttl,
+            artifact_archive_retention_seconds=archive_retention,
         )
 
 

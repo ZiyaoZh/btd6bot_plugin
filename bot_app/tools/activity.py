@@ -20,6 +20,8 @@ def build_activity_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
             arguments=arguments,
             module="tool.activity",
             subprocess_runner=dependencies.subprocess_runner,
+            artifact_store=dependencies.artifact_store,
+            artifact_ttl_seconds=dependencies.artifact_activity_ttl_seconds,
         )
 
     async def get_activity_leaderboard(
@@ -30,6 +32,8 @@ def build_activity_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
             arguments=arguments,
             module="tool.activity",
             subprocess_runner=dependencies.subprocess_runner,
+            artifact_store=dependencies.artifact_store,
+            artifact_ttl_seconds=dependencies.artifact_activity_ttl_seconds,
         )
 
     async def get_collection_event_info(
@@ -40,6 +44,8 @@ def build_activity_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
             arguments=arguments,
             module="tool.activity",
             subprocess_runner=dependencies.subprocess_runner,
+            artifact_store=dependencies.artifact_store,
+            artifact_ttl_seconds=dependencies.artifact_activity_ttl_seconds,
         )
 
     return [

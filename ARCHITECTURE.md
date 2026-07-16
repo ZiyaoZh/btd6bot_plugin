@@ -27,7 +27,8 @@ domain policy.
 - run state and the model/tool observation loop;
 - tool argument validation, timeout, exception normalization, and result limits;
 - run and tool budgets;
-- hard policies such as BTD6 knowledge grounding;
+- hard policies such as BTD6 knowledge grounding and explicit image-delivery
+  requirements;
 - context preparation and post-delivery conversation commit;
 - per-session serialization, run lifecycle state, and trace events.
 
@@ -63,6 +64,22 @@ Both runtime entry points use `bot_app/bootstrap.py` as their composition root.
 JSON schema and an async handler. Tool handlers receive `ToolDependencies` and
 must return `CommandResultPayload`; they do not call the Model or send output.
 
+### Artifact Store
+
+`bot_app/artifact_store.py` owns persistent Agent output metadata and files.
+Tools register outputs with a readable title, summary, semantic tags, dates,
+and named file roles. `PromptManager` injects a compact list of current active
+artifacts into every Model run. The Model compares that catalog with the user
+request and may call `list_artifacts` for the full catalog or `read_artifact`
+to consume a selected document or image. Matching is a Model decision and does
+not require an exact tag set. Domain tools only acquire or generate new output;
+they do not silently reuse an exact tag match internally.
+
+The store normalizes managed output under `data/artifacts/`, counts reads,
+moves expired records from `active/` to `archive/`, and deletes archived files
+after the configured retention period. Only indexed active files can be read
+through the Agent tools.
+
 ## Run Protocol
 
 The native tool-calling state flow is:
@@ -84,6 +101,13 @@ message pairs. Tools required by a deterministic policy are injected as
 `harness_tool_observations`; the Harness never fabricates an assistant turn or
 provider-specific reasoning fields on behalf of the Model.
 
+Image requests remain Model-driven so the current artifact catalog can be
+reviewed before any new generation. A matching image can be returned through
+`read_artifact`; otherwise the Model obtains any required facts and calls
+`generate_image`. The image policy still normalizes terminal failures, while
+the prompt and tool descriptions require an actual image result rather than a
+text-only description.
+
 `ModelTurnUpdate` contains only the Model's public `content`, provider-neutral
 tool calls, model name, and turn metadata. Provider reasoning fields such as
 `reasoning_content` are retained only in the native API conversation history
@@ -103,6 +127,8 @@ turn metadata are not rendered into group messages.
 8. The core loop does not contain tool-name-specific domain branching.
 9. Progress delivery is observational: it does not mutate context or replace
    final delivery and memory commit.
+10. Reusable files are selected from a Model-visible artifact catalog and read
+    through `read_artifact`, not silently matched inside a domain tool.
 
 ## Extension Rules
 

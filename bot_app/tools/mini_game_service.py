@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ async def build_monkey_box_opening_result(
     arguments: dict[str, Any],
     module: str,
     subprocess_runner: AsyncSubprocessRunner | None = None,
+    output_dir: Path | None = None,
 ) -> CommandResultPayload:
     raw_box_type = (
         str(arguments.get("box_type", "") or arguments.get("box", "") or "")
@@ -80,6 +82,7 @@ async def build_monkey_box_opening_result(
         box_type=box_type,
         box_count=box_count,
         subprocess_runner=subprocess_runner,
+        output_dir=output_dir,
     )
     if not run_result.ok:
         return fail_result(
@@ -95,21 +98,28 @@ async def build_monkey_box_opening_result(
             extra_prompt="请说明开箱模拟失败并建议稍后重试。",
         )
 
-    generated_files = [run_result.report_path]
-    if run_result.image_path:
-        generated_files.append(run_result.image_path)
+    report_path = run_result.report_path
+    image_path = run_result.image_path
+    generated_files = [report_path]
+    if image_path:
+        generated_files.append(image_path)
+    execution_data = {
+        "fresh_run": True,
+        "stored_as_artifact": False,
+    }
 
-    if run_result.image_path:
+    if image_path:
         return image_result(
             module=module,
             command="simulate_monkey_box_opening",
-            image_path=run_result.image_path,
+            image_path=image_path,
             data={
                 "box_type": box_type,
                 "box_count": box_count,
-                "report_path": run_result.report_path,
+                "report_path": report_path,
                 "generated_files": generated_files,
                 "output_text": run_result.output_text,
+                **execution_data,
             },
             message="开箱模拟完成，已生成统计与拼图",
             extra_prompt="只写一句适合作为开箱拼图 caption 的简短总结。外层系统会负责发送图片，不要说图片无法发送。",
@@ -121,9 +131,10 @@ async def build_monkey_box_opening_result(
         data={
             "box_type": box_type,
             "box_count": box_count,
-            "report_path": run_result.report_path,
+            "report_path": report_path,
             "generated_files": generated_files,
             "output_text": run_result.output_text,
+            **execution_data,
         },
         message="开箱模拟完成，已生成统计文档",
         extra_prompt="请基于输出文本简要总结本次开箱统计结果。",
@@ -145,17 +156,23 @@ async def run_chat_monkey_simulator(
     box_type: str,
     box_count: int,
     subprocess_runner: AsyncSubprocessRunner | None = None,
+    output_dir: Path | None = None,
 ) -> ChatMonkeyResult:
     main_path = chat_monkey_root / "main.py"
     if not main_path.exists():
         return ChatMonkeyResult(False, "", "", "", "未找到 ChatMonkeyTD/main.py。")
 
-    output_dir = chat_monkey_root / "output"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    resolved_output_dir = output_dir or (chat_monkey_root / "output")
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
+    _cleanup_old_outputs(resolved_output_dir)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = uuid4().hex[:8]
-    report_path = (output_dir / f"bot_open_result_{stamp}_{suffix}.md").resolve()
-    image_path = (output_dir / f"bot_open_result_{stamp}_{suffix}.png").resolve()
+    report_path = (
+        resolved_output_dir / f"bot_open_result_{stamp}_{suffix}.md"
+    ).resolve()
+    image_path = (
+        resolved_output_dir / f"bot_open_result_{stamp}_{suffix}.png"
+    ).resolve()
 
     cmd = [
         sys.executable,
@@ -206,3 +223,13 @@ async def run_chat_monkey_simulator(
     ).strip()
 
     return ChatMonkeyResult(True, str(report_path), final_image_path, output_text)
+
+
+def _cleanup_old_outputs(output_dir: Path, max_age_seconds: float = 86_400) -> None:
+    cutoff = time.time() - max(60.0, float(max_age_seconds))
+    for path in output_dir.glob("bot_open_result_*"):
+        try:
+            if path.is_file() and path.stat().st_mtime <= cutoff:
+                path.unlink(missing_ok=True)
+        except OSError:
+            continue
