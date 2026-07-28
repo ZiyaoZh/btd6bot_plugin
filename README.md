@@ -65,7 +65,7 @@ event -> context -> model -> tool call -> validate/execute -> observation
 - `bot_app/harness/`: Run 循环、状态、会话锁、工具执行器、证据策略和 RunStore。
 - `bot_app/tools/`: 按功能域维护 tool schema、handler 与 service；外部 CLI、知识库、小游戏等业务逻辑均在该层执行。
 - `btd6_api_processor/`: 活动与榜单数据处理。
-- `btd6_knowledge_base/`: 本地知识库与索引。
+- `btd6_knowledge_base/`: 版本化 Markdown 本地知识库；运行时直接扫描文档目录，不依赖搜索索引数据库。
 - `manuals/`: 程序说明书。
 - `prompts/`: 系统提示词和工具选择提示。
 - `data/`: 插件数据库文件。

@@ -43,8 +43,7 @@ def build_search_game_knowledge_result(
         top_n = 5
     top_n = max(1, min(top_n, 20))
 
-    corpus_dir = kb_root / "wiki_data_second_cleaned" / "btd6"
-    db_path = kb_root / "search_index.db"
+    corpus_dir = _knowledge_corpus_dir(kb_root)
     alias_file_path = kb_root / "aliases.json"
     alias_file = alias_file_path if alias_file_path.exists() else None
 
@@ -54,7 +53,6 @@ def build_search_game_knowledge_result(
             candidate_items = kb_interface.interface_search_with_metadata(
                 query=query,
                 top_n=top_n,
-                db_path=db_path,
                 corpus_dir=corpus_dir,
                 alias_file=alias_file,
                 query_variants=query_plan.variants,
@@ -71,7 +69,6 @@ def build_search_game_knowledge_result(
             paths = kb_interface.interface_search(
                 query=query,
                 top_n=top_n,
-                db_path=db_path,
                 corpus_dir=corpus_dir,
                 alias_file=alias_file,
             )
@@ -97,7 +94,7 @@ def build_search_game_knowledge_result(
                 "score_margin": 0.0,
             },
             message=f"游戏知识检索失败: {type(exc).__name__}",
-            extra_prompt="请简要说明检索失败，并建议稍后重试或检查知识库索引文件。",
+            extra_prompt="请简要说明检索失败，并建议稍后重试或检查 Markdown 知识库目录。",
         )
 
     matched_paths = [str(path) for path in paths]
@@ -168,7 +165,7 @@ def build_read_game_knowledge_file_result(
             command="read_game_knowledge_file",
             data={"file_path": raw_path, "content": ""},
             message="拒绝读取该路径：超出知识库允许范围。",
-            extra_prompt="仅允许读取 btd6_knowledge_base/wiki_data_second_cleaned/btd6 目录内文件。",
+            extra_prompt="仅允许读取 btd6_knowledge_base/knowledge_docs 目录内文件。",
         )
 
     if not safe_path.exists() or not safe_path.is_file():
@@ -180,13 +177,13 @@ def build_read_game_knowledge_file_result(
             extra_prompt="请改用 search_game_knowledge 返回的路径。",
         )
 
-    if safe_path.suffix.lower() not in {".html", ".htm", ".md", ".txt"}:
+    if safe_path.suffix.lower() != ".md":
         return fail_result(
             module=module,
             command="read_game_knowledge_file",
             data={"file_path": str(safe_path), "content": ""},
             message="文件类型不允许读取。",
-            extra_prompt="仅支持读取 html/htm/md/txt 文件。",
+            extra_prompt="仅支持读取 Markdown 文件。",
         )
 
     try:
@@ -207,7 +204,7 @@ def build_read_game_knowledge_file_result(
         keywords_query=keywords_query,
     )
     if keywords_query:
-        paragraph_content = extract_indexed_paragraphs(
+        paragraph_content = extract_markdown_sections(
             kb_root=kb_root,
             safe_path=safe_path,
             keywords_query=keywords_query,
@@ -327,7 +324,7 @@ def _build_long_document_result(
             ),
         )
 
-    corpus_dir = kb_root / "wiki_data_second_cleaned" / "btd6"
+    corpus_dir = _knowledge_corpus_dir(kb_root)
     try:
         kb_interface = _load_kb_interface(kb_root)
         extract_result = kb_interface.interface_extract(
@@ -382,24 +379,26 @@ def _build_long_document_result(
     )
 
 
-def extract_indexed_paragraphs(
+def extract_markdown_sections(
     *,
     kb_root: Path,
     safe_path: Path,
     keywords_query: str,
     max_chars: int,
 ) -> dict[str, Any]:
-    corpus_dir = kb_root / "wiki_data_second_cleaned" / "btd6"
-    db_path = kb_root / "search_index.db"
+    corpus_dir = _knowledge_corpus_dir(kb_root)
     alias_file_path = kb_root / "aliases.json"
     alias_file = alias_file_path if alias_file_path.exists() else None
-    paragraph_query = normalize_btd6_search_terms(strip_kb_query_invocation_noise(keywords_query))
+    literal_query = strip_kb_query_invocation_noise(keywords_query)
+    normalized_query = normalize_btd6_search_terms(literal_query)
+    # Keep structural Wiki wording such as "路线3" alongside the semantic
+    # rewrite "下路" so Markdown heading extraction can match either form.
+    paragraph_query = " ".join(_dedupe_texts([literal_query, normalized_query]))
     try:
         kb_interface = _load_kb_interface(kb_root)
         result = kb_interface.interface_extract_paragraphs(
             file_name=str(safe_path),
             keywords_query=paragraph_query or keywords_query,
-            db_path=db_path,
             corpus_dir=corpus_dir,
             alias_file=alias_file,
             max_chars=max_chars,
@@ -860,17 +859,17 @@ def load_alias_canonicals(alias_file: Path) -> dict[str, str]:
 
 
 def kb_title_terms(kb_root: Path) -> list[str]:
-    corpus_dir = kb_root / "wiki_data_second_cleaned" / "btd6"
-    return _cached_kb_title_terms(str(corpus_dir.resolve(strict=False)))
+    corpus_dir = _knowledge_corpus_dir(kb_root)
+    return _kb_title_terms_from_dir(corpus_dir)
 
 
-@lru_cache(maxsize=8)
-def _cached_kb_title_terms(corpus_dir: str) -> list[str]:
-    root = Path(corpus_dir)
+def _kb_title_terms_from_dir(root: Path) -> list[str]:
     if not root.exists():
         return []
     titles = []
-    for path in root.rglob("*.html"):
+    for path in root.rglob("*.md"):
+        if ".history" in path.parts or path.name == "README.md":
+            continue
         title = path.stem.strip()
         if title:
             titles.append(title)
@@ -895,10 +894,7 @@ def _dedupe_texts(items: list[str]) -> list[str]:
 
 
 def resolve_safe_kb_path(raw_path: str, *, kb_root: Path) -> Path | None:
-    allowed_roots = [
-        (kb_root / "wiki_data_second_cleaned" / "btd6").resolve(strict=False),
-        (kb_root / "wiki_data_cleaned" / "btd6").resolve(strict=False),
-    ]
+    allowed_root = (kb_root / "knowledge_docs").resolve(strict=False)
     raw_candidate = Path(raw_path)
     candidates = [raw_candidate] if raw_candidate.is_absolute() else []
     if not raw_candidate.is_absolute():
@@ -909,24 +905,24 @@ def resolve_safe_kb_path(raw_path: str, *, kb_root: Path) -> Path | None:
             resolved = candidate.resolve(strict=False)
         except Exception:
             continue
-        if any(resolved.is_relative_to(root) for root in allowed_roots):
+        if resolved.is_relative_to(allowed_root):
             return resolved
     return None
 
 
 def extract_readable_content(text: str) -> str:
-    stripped = text
-    try:
-        from bs4 import BeautifulSoup  # type: ignore
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    if normalized.startswith("---\n"):
+        frontmatter_end = normalized.find("\n---\n", 4)
+        if frontmatter_end >= 0:
+            normalized = normalized[frontmatter_end + 5 :]
+    return "\n".join(
+        line.rstrip() for line in normalized.splitlines() if line.strip()
+    )
 
-        soup = BeautifulSoup(text, "html.parser")
-        for tag in soup(["script", "style", "noscript"]):
-            tag.decompose()
-        stripped = soup.get_text("\n", strip=True)
-    except Exception:
-        stripped = text
 
-    return "\n".join(line.strip() for line in stripped.splitlines() if line.strip())
+def _knowledge_corpus_dir(kb_root: Path) -> Path:
+    return kb_root / "knowledge_docs"
 
 
 def sanitize_kb_query(query: str) -> str:
@@ -1171,6 +1167,7 @@ BTD6_FIELD_TERMS = (
 )
 
 
+@lru_cache(maxsize=8)
 def _load_kb_interface(kb_root: Path) -> ModuleType:
     module_path = kb_root / "kb_interface.py"
     if not module_path.exists():

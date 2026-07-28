@@ -285,10 +285,8 @@ def _create_temp_plugin_root(temp_dir: str) -> Path:
 
 def _create_fake_knowledge_base(plugin_root: Path) -> Path:
     kb_root = plugin_root / "btd6_knowledge_base"
-    corpus_dir = kb_root / "wiki_data_second_cleaned" / "btd6"
+    corpus_dir = kb_root / "knowledge_docs"
     corpus_dir.mkdir(parents=True)
-    (kb_root / "wiki_data_cleaned" / "btd6").mkdir(parents=True)
-    (kb_root / "search_index.db").write_text("", encoding="utf-8")
     (corpus_dir / "monkey.md").write_text(
         "忍者猴可以升级为大师忍者。", encoding="utf-8"
     )
@@ -296,11 +294,12 @@ def _create_fake_knowledge_base(plugin_root: Path) -> Path:
         "野兽之主 Beast Handler 下路 0-0-4 数据。", encoding="utf-8"
     )
     (corpus_dir / "long.md").write_text("忍者猴\n" * 9000, encoding="utf-8")
+    (corpus_dir / "legacy.txt").write_text("旧知识库文本", encoding="utf-8")
     (kb_root / "kb_interface.py").write_text(
         "\n".join(
             [
                 "from pathlib import Path",
-                "def interface_search(query, top_n, db_path, corpus_dir, alias_file):",
+                "def interface_search(query, top_n, corpus_dir, alias_file):",
                 "    Path(corpus_dir, 'last_query.txt').write_text(query, encoding='utf-8')",
                 "    if '野兽之主' in query or 'Beast Handler' in query:",
                 "        return [str(Path(corpus_dir) / 'beast.md')][:top_n]",
@@ -322,14 +321,12 @@ def _create_fake_knowledge_base(plugin_root: Path) -> Path:
 
 def _create_empty_fake_knowledge_base(plugin_root: Path) -> Path:
     kb_root = plugin_root / "btd6_knowledge_base"
-    corpus_dir = kb_root / "wiki_data_second_cleaned" / "btd6"
+    corpus_dir = kb_root / "knowledge_docs"
     corpus_dir.mkdir(parents=True)
-    (kb_root / "wiki_data_cleaned" / "btd6").mkdir(parents=True)
-    (kb_root / "search_index.db").write_text("", encoding="utf-8")
     (kb_root / "kb_interface.py").write_text(
         "\n".join(
             [
-                "def interface_search(query, top_n, db_path, corpus_dir, alias_file):",
+                "def interface_search(query, top_n, corpus_dir, alias_file):",
                 "    return []",
                 "def interface_extract(file_name, keywords_query, corpus_dir, max_chars):",
                 "    return {'file': file_name, 'max_chars': max_chars, 'text': '', 'keywords': [], 'chars': 0}",
@@ -1037,7 +1034,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                 _event("@小污猫 野兽之主数据"),
             )
             cleaned_query = (
-                kb_root / "wiki_data_second_cleaned" / "btd6" / "last_query.txt"
+                kb_root / "knowledge_docs" / "last_query.txt"
             ).read_text(encoding="utf-8")
             file_path = search_result["data"]["matched_paths"][0]
             read_result = await registry.execute(
@@ -1048,7 +1045,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             long_result = await registry.execute(
                 "read_game_knowledge_file",
                 {
-                    "file_path": str(kb_root / "wiki_data_second_cleaned/btd6/long.md"),
+                    "file_path": str(kb_root / "knowledge_docs/long.md"),
                     "keywords": ["忍者猴"],
                     "max_chars": 1200,
                 },
@@ -1058,6 +1055,11 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                 "read_game_knowledge_file",
                 {"file_path": str(plugin_root / "outside.md")},
                 _event("读越界文件"),
+            )
+            rejected_legacy_result = await registry.execute(
+                "read_game_knowledge_file",
+                {"file_path": str(kb_root / "knowledge_docs/legacy.txt")},
+                _event("读旧格式文件"),
             )
 
         self.assertTrue(search_result["ok"])
@@ -1078,6 +1080,8 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(long_result["data"]["mode"], "keyword_extract")
         self.assertGreater(long_result["data"]["content_chars"], 0)
         self.assertFalse(rejected_result["ok"])
+        self.assertFalse(rejected_legacy_result["ok"])
+        self.assertEqual(rejected_legacy_result["message"], "文件类型不允许读取。")
         self.assertNotIn(str(kb_root.resolve()), sys.path)
 
     def test_parse_duckduckgo_results_extracts_public_result_fields(self) -> None:
@@ -1175,7 +1179,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                         "knowledge_query": "人鱼猴",
                         "knowledge_query_raw": "人鱼猴数据",
                         "matched_count": 1,
-                        "matched_paths": ["/kb/人鱼猴.html"],
+                        "matched_paths": ["/kb/人鱼猴.md"],
                     },
                     "message": "游戏知识检索完成",
                     "extra_prompt": "",
@@ -1185,13 +1189,13 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             ),
             ToolCallRecord(
                 name="read_game_knowledge_file",
-                arguments={"file_path": "/kb/人鱼猴.html"},
+                arguments={"file_path": "/kb/人鱼猴.md"},
                 result={
                     "module": "tool.knowledge",
                     "ok": True,
                     "command": "read_game_knowledge_file",
                     "data": {
-                        "file_path": "/kb/人鱼猴.html",
+                        "file_path": "/kb/人鱼猴.md",
                         "content": "人鱼猴详细数据",
                         "content_chars": 8,
                     },

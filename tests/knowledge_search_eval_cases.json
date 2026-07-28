@@ -1,7 +1,7 @@
 [
   {
     "query": "@小污猫 野兽之主数据",
-    "expected_first": "野兽之主.html",
+    "expected_first": "野兽之主.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "runtime_log",
@@ -9,7 +9,7 @@
   },
   {
     "query": "004野兽之主能不能抓DDT",
-    "expected_first": "野兽之主.html",
+    "expected_first": "野兽之主.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "runtime_log",
@@ -17,7 +17,7 @@
   },
   {
     "query": "野兽之主下路详细数据",
-    "expected_first": "野兽之主.html",
+    "expected_first": "野兽之主.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "runtime_log",
@@ -25,7 +25,7 @@
   },
   {
     "query": "野兽之主路线3详细数据",
-    "expected_first": "野兽之主.html",
+    "expected_first": "野兽之主.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "runtime_log",
@@ -33,7 +33,7 @@
   },
   {
     "query": "人鱼猴数据",
-    "expected_first": "人鱼猴.html",
+    "expected_first": "人鱼猴.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "runtime_log",
@@ -41,7 +41,7 @@
   },
   {
     "query": "野兽之主数据",
-    "expected_first": "野兽之主.html",
+    "expected_first": "野兽之主.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "runtime_log",
@@ -49,7 +49,7 @@
   },
   {
     "query": "野兽之主路线3数据",
-    "expected_first": "野兽之主.html",
+    "expected_first": "野兽之主.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "runtime_log",
@@ -57,7 +57,7 @@
   },
   {
     "query": "Mermaid Monkey stats",
-    "expected_first": "人鱼猴.html",
+    "expected_first": "人鱼猴.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_alias",
@@ -65,7 +65,7 @@
   },
   {
     "query": "Beast Handler 004 DDT",
-    "expected_first": "野兽之主.html",
+    "expected_first": "野兽之主.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_alias",
@@ -73,7 +73,7 @@
   },
   {
     "query": "小污猫查一下驯兽师004可不可以抓ddt",
-    "expected_first": "野兽之主.html",
+    "expected_first": "野兽之主.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "runtime_phrase",
@@ -81,7 +81,7 @@
   },
   {
     "query": "鱼人猴资料",
-    "expected_first": "人鱼猴.html",
+    "expected_first": "人鱼猴.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "runtime_phrase",
@@ -89,7 +89,7 @@
   },
   {
     "query": "brickell能给我看看技能吗",
-    "expected_first": "海军上将布里克尔.html",
+    "expected_first": "海军上将布里克尔.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "runtime_phrase",
@@ -97,7 +97,7 @@
   },
   {
     "query": "逆戟鲸能不能抓DDT",
-    "expected_first": "逆戟鲸.html",
+    "expected_first": "逆戟鲸.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_mechanic",
@@ -105,7 +105,7 @@
   },
   {
     "query": "下路野兽004数据",
-    "expected_first": "野兽之主.html",
+    "expected_first": "野兽之主.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_phrase",
@@ -113,7 +113,7 @@
   },
   {
     "query": "飞镖猴数据",
-    "expected_first": "飞镖猴.html",
+    "expected_first": "飞镖猴.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_tower",
@@ -121,7 +121,7 @@
   },
   {
     "query": "回旋镖猴机制",
-    "expected_first": "回旋镖猴.html",
+    "expected_first": "回旋镖猴.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_tower",
@@ -129,7 +129,7 @@
   },
   {
     "query": "大炮价格伤害",
-    "expected_first": "大炮.html",
+    "expected_first": "大炮.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_tower",
@@ -137,7 +137,7 @@
   },
   {
     "query": "图钉炮穿透攻速",
-    "expected_first": "图钉炮.html",
+    "expected_first": "图钉炮.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_tower",
@@ -145,7 +145,7 @@
   },
   {
     "query": "冰猴能不能破铅",
-    "expected_first": "冰猴.html",
+    "expected_first": "冰猴.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_mechanic",
@@ -153,7 +153,7 @@
   },
   {
     "query": "胶水炮手数据",
-    "expected_first": "胶水炮手.html",
+    "expected_first": "胶水炮手.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_tower",
@@ -161,7 +161,7 @@
   },
   {
     "query": "狙击手猴中路数据",
-    "expected_first": "狙击手猴.html",
+    "expected_first": "狙击手猴.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_route",
@@ -169,7 +169,7 @@
   },
   {
     "query": "猴子潜艇上路机制",
-    "expected_first": "猴子潜艇.html",
+    "expected_first": "猴子潜艇.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_route",
@@ -177,7 +177,7 @@
   },
   {
     "query": "海盗猴下路收益",
-    "expected_first": "海盗猴.html",
+    "expected_first": "海盗猴.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_route",
@@ -185,7 +185,7 @@
   },
   {
     "query": "飞机数据",
-    "expected_first": "飞机.html",
+    "expected_first": "飞机.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_tower",
@@ -193,7 +193,7 @@
   },
   {
     "query": "直升机中路支援",
-    "expected_first": "直升机.html",
+    "expected_first": "直升机.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_route",
@@ -201,7 +201,7 @@
   },
   {
     "query": "迫击炮猴能不能反迷彩",
-    "expected_first": "迫击炮猴.html",
+    "expected_first": "迫击炮猴.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_mechanic",
@@ -209,7 +209,7 @@
   },
   {
     "query": "机枪猴数据",
-    "expected_first": "机枪猴.html",
+    "expected_first": "机枪猴.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_tower",
@@ -217,7 +217,7 @@
   },
   {
     "query": "法师猴下路亡灵",
-    "expected_first": "法师猴.html",
+    "expected_first": "法师猴.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_route",
@@ -225,7 +225,7 @@
   },
   {
     "query": "超猴侠太阳神庙",
-    "expected_first": "超猴侠.html",
+    "expected_first": "超猴侠.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_tower",
@@ -233,7 +233,7 @@
   },
   {
     "query": "忍者猴数据",
-    "expected_first": "忍者猴.html",
+    "expected_first": "忍者猴.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_tower",
@@ -241,7 +241,7 @@
   },
   {
     "query": "炼金术士永久啤酒",
-    "expected_first": "炼金术士.html",
+    "expected_first": "炼金术士.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_tower",
@@ -249,7 +249,7 @@
   },
   {
     "query": "德鲁伊下路数据",
-    "expected_first": "德鲁伊.html",
+    "expected_first": "德鲁伊.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_route",
@@ -257,7 +257,7 @@
   },
   {
     "query": "香蕉农场收益",
-    "expected_first": "香蕉农场.html",
+    "expected_first": "香蕉农场.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_tower",
@@ -265,7 +265,7 @@
   },
   {
     "query": "刺钉工厂数据",
-    "expected_first": "刺钉工厂.html",
+    "expected_first": "刺钉工厂.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_tower",
@@ -273,7 +273,7 @@
   },
   {
     "query": "猴子村下路收益加成",
-    "expected_first": "猴子村.html",
+    "expected_first": "猴子村.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_route",
@@ -281,7 +281,7 @@
   },
   {
     "query": "工程师猴陷阱",
-    "expected_first": "工程师猴.html",
+    "expected_first": "工程师猴.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_tower",
@@ -289,7 +289,7 @@
   },
   {
     "query": "昆西数据",
-    "expected_first": "昆西.html",
+    "expected_first": "昆西.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_hero",
@@ -297,7 +297,7 @@
   },
   {
     "query": "格温多琳技能",
-    "expected_first": "格温多琳.html",
+    "expected_first": "格温多琳.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_hero",
@@ -305,7 +305,7 @@
   },
   {
     "query": "奥本数据",
-    "expected_first": "奥本.html",
+    "expected_first": "奥本.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_hero",
@@ -313,7 +313,7 @@
   },
   {
     "query": "本杰明收益",
-    "expected_first": "本杰明.html",
+    "expected_first": "本杰明.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_hero",
@@ -321,7 +321,7 @@
   },
   {
     "query": "艾泽里技能",
-    "expected_first": "艾泽里.html",
+    "expected_first": "艾泽里.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_hero",
@@ -329,7 +329,7 @@
   },
   {
     "query": "帕特数据",
-    "expected_first": "帕特•法斯第.html",
+    "expected_first": "帕特•法斯第.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_hero",
@@ -337,7 +337,7 @@
   },
   {
     "query": "布里克尔技能",
-    "expected_first": "海军上将布里克尔.html",
+    "expected_first": "海军上将布里克尔.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_hero",
@@ -345,7 +345,7 @@
   },
   {
     "query": "艾蒂安反迷彩",
-    "expected_first": "艾蒂安.html",
+    "expected_first": "艾蒂安.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_hero",
@@ -353,7 +353,7 @@
   },
   {
     "query": "萨乌达数据",
-    "expected_first": "萨乌达.html",
+    "expected_first": "萨乌达.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_hero",
@@ -361,7 +361,7 @@
   },
   {
     "query": "杰拉尔多商店",
-    "expected_first": "杰拉尔多.html",
+    "expected_first": "杰拉尔多.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_hero",
@@ -369,7 +369,7 @@
   },
   {
     "query": "科沃斯灵魂",
-    "expected_first": "科沃斯.html",
+    "expected_first": "科沃斯.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_hero",
@@ -377,7 +377,7 @@
   },
   {
     "query": "罗莎莉娅数据",
-    "expected_first": "罗莎莉娅.html",
+    "expected_first": "罗莎莉娅.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_hero",
@@ -385,7 +385,7 @@
   },
   {
     "query": "西拉斯数据",
-    "expected_first": "西拉斯.html",
+    "expected_first": "西拉斯.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_hero",
@@ -393,7 +393,7 @@
   },
   {
     "query": "巨齿鲨数据",
-    "expected_first": "巨齿鲨.html",
+    "expected_first": "巨齿鲨.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_upgrade",
@@ -401,7 +401,7 @@
   },
   {
     "query": "霸王龙能不能打DDT",
-    "expected_first": "霸王龙.html",
+    "expected_first": "霸王龙.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_mechanic",
@@ -409,7 +409,7 @@
   },
   {
     "query": "M.A.D伤害",
-    "expected_first": "M.A.D.html",
+    "expected_first": "M.A.D.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_upgrade",
@@ -417,7 +417,7 @@
   },
   {
     "query": "气球终结者数据",
-    "expected_first": "气球终结者.html",
+    "expected_first": "气球终结者.md",
     "should_hit": true,
     "requires_grounded_answer": true,
     "source": "synthetic_upgrade",

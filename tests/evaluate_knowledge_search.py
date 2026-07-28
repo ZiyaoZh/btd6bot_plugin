@@ -14,7 +14,7 @@ sys.path.insert(0, str(PLUGIN_ROOT))
 sys.path.insert(0, str(KB_ROOT))
 
 from bot_app.tools.knowledge_service import build_kb_query_plan  # noqa: E402
-from search_framework import search_file_candidates  # noqa: E402
+from markdown_store import search_file_candidates  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -80,10 +80,9 @@ def load_cases(case_file: Path) -> list[SearchEvalCase]:
 def evaluate_case(case: SearchEvalCase, *, top_n: int) -> SearchEvalResult:
     query_plan = build_kb_query_plan(case.query, kb_root=KB_ROOT)
     matched_candidates = search_file_candidates(
-        db_path=KB_ROOT / "search_index.db",
         query=query_plan.normalized,
         top_k=top_n,
-        corpus_dir=KB_ROOT / "wiki_data_second_cleaned" / "btd6",
+        corpus_dir=KB_ROOT / "knowledge_docs",
         alias_file=KB_ROOT / "aliases.json",
         query_variants=query_plan.variants,
         entity_terms=query_plan.entity_terms,
