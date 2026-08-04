@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from ..artifact_store import ArtifactFile, ArtifactRecord
+from ..image_request import classify_image_request, factual_btd6_artifact_error
 from ..protocol import CommandResultPayload, EventPayload
 from .base import (
     ConcreteTool,
@@ -65,7 +66,6 @@ def build_artifact_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
     async def read_artifact(
         arguments: dict[str, Any], event: EventPayload
     ) -> CommandResultPayload:
-        del event
         store = dependencies.artifact_store
         if store is None:
             return fail_result(
@@ -109,6 +109,22 @@ def build_artifact_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
             "reused": True,
         }
         if _is_image(artifact_file):
+            reuse_error = factual_btd6_artifact_error(
+                classify_image_request(str(event.get("text", "") or "")),
+                kind=record.kind,
+                metadata=record.metadata,
+            )
+            if reuse_error:
+                return fail_result(
+                    module="tool.artifact",
+                    command="read_artifact",
+                    data={
+                        "artifact_id": artifact_id,
+                        "reason": "incompatible_activity_image",
+                    },
+                    message=reuse_error,
+                    extra_prompt="请改用 get_activity_brief_image；不要发送这个旧图片产物。",
+                )
             return image_result(
                 module="tool.artifact",
                 command="read_artifact",

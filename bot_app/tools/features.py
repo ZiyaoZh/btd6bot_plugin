@@ -59,8 +59,23 @@ _FEATURE_CATALOG: list[dict[str, Any]] = [
         "name": "get_activity_detail",
         "aliases": ["activity_detail", "活动详情"],
         "description": "获取指定活动详情（detail 模式）",
-        "arguments": {"activity_type": "race|boss|odyssey|daily"},
+        "arguments": {
+            "activity_type": "race|boss|odyssey|daily",
+            "difficulty": "easy|medium|hard，征程默认 hard",
+            "event_scope": "current|upcoming|latest，默认 latest",
+        },
         "examples": ["获取竞速活动详情", "获取 boss 活动详情"],
+    },
+    {
+        "name": "get_activity_brief_image",
+        "aliases": ["activity_brief", "活动情报图", "竞速图", "征程图"],
+        "description": "使用真实地图和结构化活动数据生成确定性竞速/征程情报图",
+        "arguments": {
+            "activity_type": "race|odyssey",
+            "difficulty": "easy|medium|hard，征程默认 hard",
+            "event_scope": "current|upcoming|latest，默认 current",
+        },
+        "examples": ["生成当前竞速情报图", "生成下一期困难征程图"],
     },
     {
         "name": "get_activity_leaderboard",
@@ -89,7 +104,7 @@ _FEATURE_CATALOG: list[dict[str, Any]] = [
     {
         "name": "generate_image",
         "aliases": ["画图", "生图", "生成图片", "制作插图"],
-        "description": "根据文字提示生成并发送一张图片",
+        "description": "根据文字提示生成并发送同人插画、壁纸、头像、场景画等创意图片；不用于事实型活动图",
         "arguments": {"prompt": "完整的图片描述"},
         "examples": ["画一张雨夜霓虹城市", "生成一张可爱的猴子头像"],
     },

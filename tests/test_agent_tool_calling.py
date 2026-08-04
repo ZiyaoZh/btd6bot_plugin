@@ -201,8 +201,9 @@ class FakeBot:
 
 
 class FakeActivityRunner:
-    def __init__(self) -> None:
+    def __init__(self, *, include_brief_json: bool = True) -> None:
         self.calls: list[list[str]] = []
+        self.include_brief_json = include_brief_json
 
     async def run(
         self,
@@ -229,7 +230,26 @@ class FakeActivityRunner:
         mode = cmd[cmd.index("--mode") + 1]
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if mode == "leaderboard":
+        if mode == "brief-image":
+            image_path = root / "output" / "fake_activity_brief.png"
+            json_path = root / "output" / "fake_activity_snapshot.json"
+            image_path.write_bytes(b"fake png")
+            report_lines = ["# 来源: 测试"]
+            if self.include_brief_json:
+                json_path.write_text('{"activity_type":"race"}', encoding="utf-8")
+                report_lines.append("# JSON: output/fake_activity_snapshot.json")
+            report_lines.extend(
+                [
+                    "# 图片: output/fake_activity_brief.png",
+                    "",
+                    "# 竞速情报",
+                ]
+            )
+            output_path.write_text(
+                "\n".join(report_lines),
+                encoding="utf-8",
+            )
+        elif mode == "leaderboard":
             image_path = root / "output" / "fake_leaderboard.png"
             image_path.write_bytes(b"fake png")
             output_path.write_text(
@@ -252,7 +272,12 @@ class FakeActivityRunner:
                 encoding="utf-8",
             )
         else:
-            output_path.write_text("# 详情\n测试活动详情", encoding="utf-8")
+            json_path = root / "output" / "fake_activity_detail.json"
+            json_path.write_text('{"activity_type":"race"}', encoding="utf-8")
+            output_path.write_text(
+                "# JSON: output/fake_activity_detail.json\n\n# 详情\n测试活动详情",
+                encoding="utf-8",
+            )
 
         return ProcessResult(returncode=0)
 
@@ -662,6 +687,25 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(classify_image_request("这幅画是谁画的？"))
         self.assertIsNotNone(classify_image_request("能帮我画一张日落吗？"))
         self.assertIsNone(classify_image_request("把刚才那个画出来"))
+        generic_activity = classify_image_request("把刚才那个活动图画出来")
+        self.assertIsNotNone(generic_activity)
+        self.assertEqual(
+            generic_activity.activity_types,  # type: ignore[union-attr]
+            ("race", "boss", "odyssey", "daily"),
+        )
+        self.assertEqual(classify_image_request("画一张 race car 图片").kind, "creative")  # type: ignore[union-attr]
+        self.assertEqual(
+            classify_image_request("画一只猴子参加竞速比赛的卡通图").kind,  # type: ignore[union-attr]
+            "creative",
+        )
+        self.assertEqual(
+            classify_image_request("画一张 Boss 战斗场景图").kind,  # type: ignore[union-attr]
+            "creative",
+        )
+        latest_race = classify_image_request("生成最新竞速情报图")
+        self.assertEqual(latest_race.event_scope, "latest")  # type: ignore[union-attr]
+        collection = classify_image_request("生成收集活动轮换图")
+        self.assertEqual(collection.kind, "collection")  # type: ignore[union-attr]
         leaderboard = classify_image_request("竞速排行榜图片")
         self.assertIsNotNone(leaderboard)
         self.assertEqual(leaderboard.kind, "leaderboard")  # type: ignore[union-attr]
@@ -873,6 +917,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                 "search_game_knowledge",
                 "read_game_knowledge_file",
                 "get_activity_detail",
+                "get_activity_brief_image",
                 "get_activity_leaderboard",
                 "get_collection_event_info",
                 "simulate_monkey_box_opening",
@@ -885,6 +930,21 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(function["description"], str)
             json.dumps(function["parameters"])
             self.assertFalse(function["parameters"].get("additionalProperties", True))
+
+        brief_tool = next(
+            item["function"]
+            for item in registry.to_openai_tools()
+            if item["function"]["name"] == "get_activity_brief_image"
+        )
+        self.assertEqual(brief_tool["parameters"]["required"], ["activity_type"])
+        self.assertEqual(
+            brief_tool["parameters"]["properties"]["activity_type"]["enum"],
+            ["race", "odyssey"],
+        )
+        self.assertEqual(
+            brief_tool["parameters"]["properties"]["event_scope"]["enum"],
+            ["current", "upcoming", "latest"],
+        )
 
     async def test_concrete_social_tool_handler_uses_injected_db(self) -> None:
         db = FakeDb()
@@ -942,6 +1002,14 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                 ("search_game_knowledge", {"query": "忍者猴"}),
                 ("read_game_knowledge_file", {"file_path": "a.md"}),
                 ("get_activity_detail", {"activity_type": "race"}),
+                (
+                    "get_activity_brief_image",
+                    {
+                        "activity_type": "odyssey",
+                        "difficulty": "hard",
+                        "event_scope": "current",
+                    },
+                ),
                 ("get_activity_leaderboard", {"leaderboard_type": "race"}),
                 ("get_collection_event_info", {"only_upcoming": True}),
                 ("search_web", {}),
@@ -1593,6 +1661,8 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ignore_message", prompt)
         self.assertIn("不要输出 JSON 决策协议", prompt)
         self.assertIn("不能只回复画面描述就结束", prompt)
+        self.assertIn("get_activity_brief_image", prompt)
+        self.assertIn("generate_image 只用于明确的同人插画", prompt)
         self.assertIn("read_artifact", prompt)
 
     async def test_agent_sees_artifact_catalog_and_reuses_matching_image(
@@ -1612,12 +1682,17 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             source = plugin_root / "existing_race.png"
             source.write_bytes(b"fake png")
             artifact = dependencies.artifact_store.register(  # type: ignore[union-attr]
-                kind="image.generated",
+                kind="activity.brief",
                 title="BTD6 竞速活动情报图",
                 summary="极速峡谷竞速活动，包含时间、地图、模式和限制",
                 tags=("BTD6", "竞速", "活动情报图", "图片"),
                 files=[ArtifactSource(path=source, role="image")],
                 ttl_seconds=3600,
+                metadata={
+                    "activity_type": "race",
+                    "difficulty": "hard",
+                    "event_scope": "current",
+                },
             )
             llm = FakeLLM(
                 [
@@ -1660,6 +1735,32 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(artifact.artifact_id, system_prompt)
         generate.assert_not_called()
 
+    async def test_factual_activity_request_rejects_old_ai_image_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin_root = _create_temp_plugin_root(temp_dir)
+            dependencies = _runtime(plugin_root=plugin_root)
+            source = plugin_root / "old_ai_activity.png"
+            source.write_bytes(b"fake png")
+            artifact = dependencies.artifact_store.register(  # type: ignore[union-attr]
+                kind="image.generated",
+                title="旧竞速活动图",
+                summary="旧通用生图产物",
+                tags=("BTD6", "竞速", "图片"),
+                files=[ArtifactSource(path=source, role="image")],
+                ttl_seconds=3600,
+            )
+            registry = ToolRegistry(dependencies)
+
+            result = await registry.execute(
+                "read_artifact",
+                {"artifact_id": artifact.artifact_id, "role": "image"},
+                _event("当前竞速情报图"),
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["data"]["reason"], "incompatible_activity_image")
+        self.assertEqual(result["response_type"], "text")
+
     async def test_image_tool_result_is_returned_with_final_text(self) -> None:
         activity_runner = FakeActivityRunner()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1697,6 +1798,149 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.text, "竞速排行榜来啦")
         self.assertEqual(len(activity_runner.calls), 1)
 
+    async def test_activity_brief_tool_returns_three_role_artifact_image(self) -> None:
+        activity_runner = FakeActivityRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin_root = _create_temp_plugin_root(temp_dir)
+            dependencies = _runtime(
+                plugin_root=plugin_root,
+                subprocess_runner=activity_runner,
+            )
+            registry = ToolRegistry(dependencies)
+
+            result = await registry.execute(
+                "get_activity_brief_image",
+                {
+                    "activity_type": "odyssey",
+                    "difficulty": "hard",
+                    "event_scope": "upcoming",
+                },
+                _event("生成下一期困难征程情报图"),
+            )
+            records = dependencies.artifact_store.list_active()  # type: ignore[union-attr]
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["response_type"], "image")
+        self.assertTrue(result["data"]["stored_as_artifact"])
+        self.assertIn("activity_brief", Path(result["image_path"]).parts)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].kind, "activity.brief")
+        self.assertEqual({item.role for item in records[0].files}, {"report", "image", "data"})
+        command = activity_runner.calls[0]
+        self.assertEqual(command[command.index("--activity-type") + 1], "odyssey")
+        self.assertEqual(command[command.index("--difficulty") + 1], "hard")
+        self.assertEqual(command[command.index("--event-scope") + 1], "upcoming")
+
+    async def test_factual_activity_request_cannot_use_generic_image_tool(self) -> None:
+        registry = ToolRegistry(_runtime())
+
+        result = await registry.execute(
+            "generate_image",
+            {"prompt": "制作一张竞速活动情报图"},
+            _event("制作当前竞速情报图"),
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["data"]["reason"], "use_activity_brief_tool")
+        self.assertIn("get_activity_brief_image", result["message"])
+
+        contextual_result = await registry.execute(
+            "generate_image",
+            {"prompt": "当前竞速活动情报图"},
+            _event("把刚才那个画出来"),
+        )
+        self.assertFalse(contextual_result["ok"])
+        self.assertEqual(contextual_result["data"]["reason"], "use_activity_brief_tool")
+
+        generic_result = await registry.execute(
+            "generate_image",
+            {"prompt": "BTD6 活动情报图"},
+            _event("生成一张 BTD6 活动情报图"),
+        )
+        self.assertFalse(generic_result["ok"])
+        self.assertEqual(generic_result["data"]["reason"], "use_activity_brief_tool")
+
+        leaderboard_result = await registry.execute(
+            "generate_image",
+            {"prompt": "竞速排行榜图片"},
+            _event("生成竞速排行榜图片"),
+        )
+        self.assertFalse(leaderboard_result["ok"])
+        self.assertEqual(leaderboard_result["data"]["reason"], "use_activity_brief_tool")
+
+        collection_result = await registry.execute(
+            "generate_image",
+            {"prompt": "收集活动轮换图"},
+            _event("生成收集活动轮换图"),
+        )
+        self.assertFalse(collection_result["ok"])
+        self.assertEqual(collection_result["data"]["reason"], "use_activity_brief_tool")
+
+    async def test_activity_brief_requires_one_activity_and_snapshot_json(self) -> None:
+        multi_runner = FakeActivityRunner()
+        missing_json_runner = FakeActivityRunner(include_brief_json=False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin_root = _create_temp_plugin_root(temp_dir)
+            multi_result = await ToolRegistry(
+                _runtime(plugin_root=plugin_root, subprocess_runner=multi_runner)
+            ).execute(
+                "get_activity_brief_image",
+                {"activity_type": "race", "event_scope": "current"},
+                _event("生成竞速和征程情报图"),
+            )
+            missing_json_result = await ToolRegistry(
+                _runtime(plugin_root=plugin_root, subprocess_runner=missing_json_runner)
+            ).execute(
+                "get_activity_brief_image",
+                {"activity_type": "race", "event_scope": "current"},
+                _event("生成当前竞速情报图"),
+            )
+
+        self.assertFalse(multi_result["ok"])
+        self.assertEqual(multi_result["data"]["reason"], "activity_selection_mismatch")
+        self.assertEqual(multi_runner.calls, [])
+        self.assertFalse(missing_json_result["ok"])
+        self.assertIn("结构化快照", missing_json_result["message"])
+
+    async def test_agent_sends_deterministic_activity_brief_without_ai_generation(self) -> None:
+        activity_runner = FakeActivityRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin_root = _create_temp_plugin_root(temp_dir)
+            registry = ToolRegistry(
+                _runtime(
+                    plugin_root=plugin_root,
+                    subprocess_runner=activity_runner,
+                )
+            )
+            llm = FakeLLM(
+                [
+                    _tool_response(
+                        "get_activity_brief_image",
+                        {"activity_type": "race", "event_scope": "current"},
+                    ),
+                    _assistant_response("当前竞速的地图和塔限制都在图里。"),
+                ]
+            )
+            runner = AgentRunner(
+                llm=llm,  # type: ignore[arg-type]
+                memory=GroupChatMemory(history_turns=3),
+                settings=_settings(),
+                tool_registry=registry,
+                context_manager=FakeContextManager(),  # type: ignore[arg-type]
+            )
+
+            with patch("bot_app.tools.image.generate_image_file") as generate:
+                response = await runner.run(
+                    _event("生成当前竞速情报图"),
+                    trace_id="deterministic-race-brief",
+                )
+
+        self.assertEqual([item.name for item in response.tool_calls], ["get_activity_brief_image"])
+        self.assertEqual(response.response_type, "image")
+        self.assertIn("activity_brief", Path(response.image_path).parts)
+        self.assertEqual(response.text, "当前竞速的地图和塔限制都在图里。")
+        generate.assert_not_called()
+
     async def test_activity_artifact_is_visible_and_readable(self) -> None:
         activity_runner = FakeActivityRunner()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1727,11 +1971,15 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(activity_runner.calls), 1)
         self.assertTrue(created["data"]["stored_as_artifact"])
-        self.assertEqual(artifact["title"], "BTD6 竞速活动详情")
+        self.assertTrue(created["data"]["json_path"].endswith("data.json"))
+        self.assertEqual(artifact["title"], "BTD6 最新发布竞速活动详情")
         self.assertIn("竞速", artifact["tags"])
         self.assertTrue(artifact["created_at"].endswith("UTC"))
         self.assertTrue(artifact["expires_at"].endswith("UTC"))
-        self.assertEqual(artifact["files"][0]["role"], "report")
+        self.assertEqual(
+            {item["role"] for item in artifact["files"]},
+            {"report", "data"},
+        )
         self.assertTrue(reused["data"]["reused"])
         self.assertIn("测试活动详情", reused["data"]["content"])
 

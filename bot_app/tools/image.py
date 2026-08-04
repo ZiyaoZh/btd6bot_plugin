@@ -6,6 +6,7 @@ import sqlite3
 from typing import Any
 
 from ..artifact_store import ArtifactSource
+from ..image_request import classify_image_request
 from ..image_prompting import MAX_IMAGE_PROMPT_CHARS, build_image_generation_prompt
 from ..protocol import CommandResultPayload, EventPayload
 from ..settings import calculate_image_gen_execution_timeout
@@ -47,6 +48,29 @@ def build_image_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
                     "请压缩图片描述，保留主体、场景、构图、"
                     "风格等关键要求后重试。"
                 ),
+            )
+        image_request = classify_image_request(
+            "\n".join(
+                (
+                    str(event.get("text", "") or ""),
+                    prompt,
+                )
+            )
+        )
+        if (
+            image_request is not None
+            and image_request.kind in {"infographic", "leaderboard", "collection"}
+            and (image_request.activity_types or image_request.kind != "infographic")
+        ):
+            return fail_result(
+                module="tool.image",
+                command="generate_image",
+                data={"reason": "use_activity_brief_tool"},
+                message=(
+                    "事实型 BTD6 活动图不能使用通用 AI 生图；竞速/征程请使用 "
+                    "get_activity_brief_image，排行榜和收集轮换请使用各自的专用工具。"
+                ),
+                extra_prompt="请调用活动情报图、排行榜或收集活动专用工具，不要用 AI 生图伪造事实。",
             )
 
         effective_prompt = build_image_generation_prompt(
@@ -181,19 +205,16 @@ def build_image_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
             spec={
                 "name": "generate_image",
                 "description": (
-                    "根据用户要求生成并返回一张真实图片。用户明确要求画图、生成图片、"
-                    "制作海报/信息图/插图时必须调用，不能只用文本描述代替。"
-                    "信息图必须先用其他工具取得事实，再把活动名称、时间、规则、"
-                    "地图/模式和限制条件完整写入 prompt。"
+                    "根据用户要求生成并返回创意图片，适用于同人插画、壁纸、头像、"
+                    "场景画等。事实型 BTD6 活动情报图必须使用 get_activity_brief_image，"
+                    "排行榜和收集活动也必须使用各自的专用图片工具。"
                 ),
                 "parameters": object_schema(
                     {
                         "prompt": {
                             "type": "string",
                             "description": (
-                                "完整、明确的生图提示词。创意图片写清主体、动作、场景、"
-                                "构图和风格；情报图/信息图必须逐项附上已查询到的真实事实，"
-                                "并明确要求信息展示为主、插画装饰不超过画面四分之一。"
+                                "完整、明确的创意图片描述，写清主体、动作、场景、构图和风格。"
                             ),
                             "minLength": 1,
                             "maxLength": MAX_PROMPT_CHARS,
@@ -210,8 +231,6 @@ def build_image_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
             ),
         )
     ]
-
-
 def _image_artifact_tags(*, model: str) -> tuple[str, ...]:
     tags = [
         "AI 生图",

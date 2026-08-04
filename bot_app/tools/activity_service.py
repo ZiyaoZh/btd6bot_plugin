@@ -62,17 +62,40 @@ async def build_activity_detail_result(
             extra_prompt="请提示用户给出合法活动类型。",
         )
 
-    tags = (
-        "BTD6",
-        "活动详情",
-        _ACTIVITY_LABELS[detail_type],
-        "文档",
-    )
+    difficulty = str(arguments.get("difficulty", "hard") or "hard").strip().lower()
+    if difficulty not in {"easy", "medium", "hard"}:
+        return fail_result(
+            module=module,
+            command="get_activity_detail",
+            data={"mode": "detail", "activity_type": detail_type, "difficulty": difficulty},
+            message="difficulty 仅支持 easy、medium、hard。",
+            extra_prompt="请提示用户给出合法征程难度。",
+        )
+    event_scope = str(arguments.get("event_scope", "latest") or "latest").strip().lower()
+    if event_scope not in {"current", "upcoming", "latest"}:
+        return fail_result(
+            module=module,
+            command="get_activity_detail",
+            data={"mode": "detail", "activity_type": detail_type, "event_scope": event_scope},
+            message="event_scope 仅支持 current、upcoming、latest。",
+            extra_prompt="请提示用户给出合法活动范围。",
+        )
+
+    scope_label = {"current": "当前", "upcoming": "下一期", "latest": "最新发布"}[event_scope]
+    difficulty_label = {"easy": "简单", "medium": "中级", "hard": "困难"}[difficulty]
+    tags = ["BTD6", "活动详情", _ACTIVITY_LABELS[detail_type], scope_label, "文档"]
+    title_qualifier = scope_label
+    if detail_type == "odyssey":
+        title_qualifier += difficulty_label
+        tags.append(difficulty_label)
+    title = f"BTD6 {title_qualifier}{_ACTIVITY_LABELS[detail_type]}活动详情"
 
     run_result = await run_btd6_api_cli(
         api_processor_root=api_processor_root,
         mode="detail",
         detail_type=detail_type,
+        difficulty=difficulty,
+        event_scope=event_scope,
         subprocess_runner=subprocess_runner,
         report_output_dir=_activity_staging_dir(artifact_store),
     )
@@ -92,17 +115,25 @@ async def build_activity_detail_result(
     artifact = _store_activity_artifact(
         artifact_store,
         kind="activity.detail",
-        title=f"BTD6 {_ACTIVITY_LABELS[detail_type]}活动详情",
+        title=title,
         summary=_catalog_summary(run_result.report),
-        tags=tags,
+        tags=tuple(tags),
         run_result=run_result,
         ttl_seconds=artifact_ttl_seconds,
-        metadata={"mode": "detail", "activity_type": detail_type},
+        metadata={
+            "mode": "detail",
+            "activity_type": detail_type,
+            "difficulty": difficulty,
+            "event_scope": event_scope,
+        },
     )
     data = {
         "mode": "detail",
         "activity_type": detail_type,
+        "difficulty": difficulty,
+        "event_scope": event_scope,
         "generated_files": run_result.generated_files,
+        "json_path": _first_existing_file(run_result.generated_files, ".json"),
         "report": run_result.report,
         "stored_as_artifact": False,
     }
@@ -112,7 +143,10 @@ async def build_activity_detail_result(
             report=run_result.report,
             mode="detail",
             activity_type=detail_type,
+            difficulty=difficulty,
+            event_scope=event_scope,
         )
+        data["json_path"] = str(artifact.file("data") or "")
     return ok_result(
         module=module,
         command="get_activity_detail",
@@ -200,7 +234,6 @@ async def build_activity_leaderboard_result(
             message="排行榜图片未生成成功。",
             extra_prompt="请说明未找到图片文件，并建议稍后重试。",
         )
-
     artifact = _store_activity_artifact(
         artifact_store,
         kind="activity.leaderboard",
@@ -239,6 +272,165 @@ async def build_activity_leaderboard_result(
         data=data,
         message=f"{leaderboard_type} 排行榜图片已生成",
         extra_prompt="只写一句适合作为图片 caption 的说明。外层系统会负责发送图片，不要说图片无法发送。",
+    )
+
+
+async def build_activity_brief_image_result(
+    *,
+    api_processor_root: Path,
+    arguments: dict[str, Any],
+    module: str,
+    subprocess_runner: AsyncSubprocessRunner | None = None,
+    artifact_store: ArtifactStore | None = None,
+    artifact_ttl_seconds: float = 600.0,
+) -> CommandResultPayload:
+    raw_type = str(arguments.get("activity_type", "") or "").strip().lower()
+    activity_type = {
+        "竞速": "race",
+        "race": "race",
+        "征程": "odyssey",
+        "奥德赛": "odyssey",
+        "odyssey": "odyssey",
+    }.get(raw_type, raw_type)
+    if activity_type not in {"race", "odyssey"}:
+        return fail_result(
+            module=module,
+            command="get_activity_brief_image",
+            data={"activity_type": raw_type},
+            message="活动情报图首版仅支持 race 和 odyssey。",
+            extra_prompt="请说明当前可生成竞速或征程情报图。",
+        )
+
+    difficulty = str(arguments.get("difficulty", "hard") or "hard").strip().lower()
+    if difficulty not in {"easy", "medium", "hard"}:
+        return fail_result(
+            module=module,
+            command="get_activity_brief_image",
+            data={"activity_type": activity_type, "difficulty": difficulty},
+            message="difficulty 仅支持 easy、medium、hard。",
+            extra_prompt="请提示用户给出合法征程难度。",
+        )
+    event_scope = str(arguments.get("event_scope", "current") or "current").strip().lower()
+    if event_scope not in {"current", "upcoming", "latest"}:
+        return fail_result(
+            module=module,
+            command="get_activity_brief_image",
+            data={"activity_type": activity_type, "event_scope": event_scope},
+            message="event_scope 仅支持 current、upcoming、latest。",
+            extra_prompt="请提示用户给出合法活动范围。",
+        )
+
+    difficulty_label = {"easy": "简单", "medium": "中级", "hard": "困难"}[difficulty]
+    scope_label = {"current": "当前", "upcoming": "下一期", "latest": "最新发布"}[event_scope]
+    title_qualifier = scope_label
+    if activity_type == "odyssey":
+        title_qualifier += difficulty_label
+    title = f"BTD6 {title_qualifier}{_ACTIVITY_LABELS[activity_type]}活动情报图"
+    tags = ["BTD6", "活动情报图", _ACTIVITY_LABELS[activity_type], scope_label, "图片"]
+    if activity_type == "odyssey":
+        tags.append(difficulty_label)
+
+    run_result = await run_btd6_api_cli(
+        api_processor_root=api_processor_root,
+        mode="brief-image",
+        activity_type=activity_type,
+        difficulty=difficulty,
+        event_scope=event_scope,
+        subprocess_runner=subprocess_runner,
+        report_output_dir=_activity_staging_dir(artifact_store),
+    )
+    if not run_result.ok:
+        return fail_result(
+            module=module,
+            command="get_activity_brief_image",
+            data={
+                "mode": "brief-image",
+                "activity_type": activity_type,
+                "difficulty": difficulty,
+                "event_scope": event_scope,
+                "generated_files": [],
+            },
+            message=run_result.error_message,
+            extra_prompt="请说明活动情报图获取失败并建议稍后重试。",
+        )
+
+    image_path = _first_existing_file(run_result.generated_files, ".png")
+    if not image_path:
+        return fail_result(
+            module=module,
+            command="get_activity_brief_image",
+            data={
+                "mode": "brief-image",
+                "activity_type": activity_type,
+                "difficulty": difficulty,
+                "event_scope": event_scope,
+                "generated_files": run_result.generated_files,
+            },
+            message="活动情报图未生成成功。",
+            extra_prompt="请说明未找到图片文件，并建议稍后重试。",
+        )
+    json_path = _first_existing_file(run_result.generated_files, ".json")
+    if not json_path:
+        return fail_result(
+            module=module,
+            command="get_activity_brief_image",
+            data={
+                "mode": "brief-image",
+                "activity_type": activity_type,
+                "difficulty": difficulty,
+                "event_scope": event_scope,
+                "generated_files": run_result.generated_files,
+            },
+            message="活动情报图缺少对应的结构化快照。",
+            extra_prompt="请说明活动快照未生成完整，并建议稍后重试。",
+        )
+
+    artifact = _store_activity_artifact(
+        artifact_store,
+        kind="activity.brief",
+        title=title,
+        summary=_catalog_summary(run_result.report),
+        tags=tuple(tags),
+        run_result=run_result,
+        ttl_seconds=artifact_ttl_seconds,
+        metadata={
+            "mode": "brief-image",
+            "activity_type": activity_type,
+            "difficulty": difficulty,
+            "event_scope": event_scope,
+        },
+    )
+    if artifact is not None:
+        normalized_image_path = artifact.file("image")
+        if normalized_image_path is not None:
+            image_path = str(normalized_image_path)
+        data = _artifact_result_data(
+            artifact,
+            report=run_result.report,
+            mode="brief-image",
+            activity_type=activity_type,
+            difficulty=difficulty,
+            event_scope=event_scope,
+        )
+        data["json_path"] = str(artifact.file("data") or "")
+    else:
+        data = {
+            "mode": "brief-image",
+            "activity_type": activity_type,
+            "difficulty": difficulty,
+            "event_scope": event_scope,
+            "generated_files": run_result.generated_files,
+            "report": run_result.report,
+            "json_path": json_path,
+            "stored_as_artifact": False,
+        }
+    return image_result(
+        module=module,
+        command="get_activity_brief_image",
+        image_path=image_path,
+        data=data,
+        message=f"{scope_label}{_ACTIVITY_LABELS[activity_type]}情报图已生成",
+        extra_prompt="只写一句准确的图片说明。外层系统会发送图片，不要改写图中事实。",
     )
 
 
@@ -367,6 +559,9 @@ async def run_btd6_api_cli(
     api_processor_root: Path,
     mode: str,
     detail_type: str = "",
+    activity_type: str = "",
+    difficulty: str = "hard",
+    event_scope: str = "latest",
     leaderboard_type: str = "",
     leaderboard_format: str = "markdown",
     collection_only_upcoming: bool = False,
@@ -392,7 +587,27 @@ async def run_btd6_api_cli(
         _cli_output_argument(output_file, api_processor_root),
     ]
     if mode == "detail" and detail_type:
-        cmd.extend(["--detail-types", detail_type])
+        cmd.extend(
+            [
+                "--detail-types",
+                detail_type,
+                "--difficulty",
+                difficulty,
+                "--event-scope",
+                event_scope,
+            ]
+        )
+    if mode == "brief-image":
+        cmd.extend(
+            [
+                "--activity-type",
+                activity_type or "race",
+                "--difficulty",
+                difficulty,
+                "--event-scope",
+                event_scope,
+            ]
+        )
     if mode == "leaderboard":
         cmd.extend(
             [

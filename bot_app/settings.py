@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Tuple
 
 
+ACTIVITY_BRIEF_EXECUTION_TIMEOUT_SECONDS = 180.0
+ACTIVITY_BRIEF_RUN_TIMEOUT_MARGIN_SECONDS = 60.0
+
+
 @dataclass(frozen=True)
 class AppSettings:
     env_file: str
@@ -170,6 +174,11 @@ def load_settings(env_path: str = ".env") -> AppSettings:
     tool_timeout_seconds = float(os.getenv("BOT_TOOL_TIMEOUT_SECONDS", "30"))
     max_tool_result_chars = int(os.getenv("BOT_MAX_TOOL_RESULT_CHARS", "60000"))
     run_timeout_seconds = float(os.getenv("BOT_RUN_TIMEOUT_SECONDS", "120"))
+    run_timeout_seconds = max(
+        run_timeout_seconds,
+        ACTIVITY_BRIEF_EXECUTION_TIMEOUT_SECONDS
+        + ACTIVITY_BRIEF_RUN_TIMEOUT_MARGIN_SECONDS,
+    )
     image_gen_api_base_url = os.getenv("IMAGE_GEN_API_BASE_URL", "").strip().rstrip("/")
     image_gen_api_key = os.getenv("IMAGE_GEN_API_KEY", "").strip()
     image_gen_model = os.getenv("IMAGE_GEN_MODEL", "").strip()

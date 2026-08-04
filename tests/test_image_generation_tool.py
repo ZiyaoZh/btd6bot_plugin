@@ -80,6 +80,24 @@ def _event() -> dict[str, Any]:
 
 
 class ImageGenerationToolTests(unittest.IsolatedAsyncioTestCase):
+    def test_default_run_timeout_covers_activity_brief_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_file = Path(temp_dir) / ".env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "BOT_TARGET_GROUP_ID=1000",
+                        "LLM_API_KEY=chat-key",
+                        "BOT_RUN_TIMEOUT_SECONDS=120",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                settings = load_settings(str(env_file))
+
+        self.assertGreaterEqual(settings.run_timeout_seconds, 240)
+
     def test_settings_load_private_image_generation_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             env_file = Path(temp_dir) / ".env"
