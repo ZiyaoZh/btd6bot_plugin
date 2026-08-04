@@ -24,6 +24,19 @@ _ACTIVITY_LABELS = {
     "boss-standard": "普通 Boss",
     "boss-elite": "精英 Boss",
 }
+_ACTIVITY_TYPES = {"race", "boss", "odyssey", "daily"}
+_ACTIVITY_TYPE_ALIASES = {
+    "竞速": "race",
+    "race": "race",
+    "boss": "boss",
+    "boss活动": "boss",
+    "征程": "odyssey",
+    "奥德赛": "odyssey",
+    "odyssey": "odyssey",
+    "每日挑战": "daily",
+    "日挑": "daily",
+    "daily": "daily",
+}
 
 
 async def build_activity_detail_result(
@@ -42,18 +55,8 @@ async def build_activity_detail_result(
         .strip()
         .lower()
     )
-    alias_map = {
-        "竞速": "race",
-        "race": "race",
-        "boss": "boss",
-        "boss活动": "boss",
-        "征程": "odyssey",
-        "odyssey": "odyssey",
-        "每日挑战": "daily",
-        "daily": "daily",
-    }
-    detail_type = alias_map.get(raw_type, raw_type)
-    if detail_type not in {"race", "boss", "odyssey", "daily"}:
+    detail_type = _normalize_activity_type(raw_type)
+    if detail_type not in _ACTIVITY_TYPES:
         return fail_result(
             module=module,
             command="get_activity_detail",
@@ -285,20 +288,14 @@ async def build_activity_brief_image_result(
     artifact_ttl_seconds: float = 600.0,
 ) -> CommandResultPayload:
     raw_type = str(arguments.get("activity_type", "") or "").strip().lower()
-    activity_type = {
-        "竞速": "race",
-        "race": "race",
-        "征程": "odyssey",
-        "奥德赛": "odyssey",
-        "odyssey": "odyssey",
-    }.get(raw_type, raw_type)
-    if activity_type not in {"race", "odyssey"}:
+    activity_type = _normalize_activity_type(raw_type)
+    if activity_type not in _ACTIVITY_TYPES:
         return fail_result(
             module=module,
             command="get_activity_brief_image",
             data={"activity_type": raw_type},
-            message="活动情报图首版仅支持 race 和 odyssey。",
-            extra_prompt="请说明当前可生成竞速或征程情报图。",
+            message="activity_type 仅支持 race、boss、odyssey、daily。",
+            extra_prompt="请提示用户给出合法活动类型。",
         )
 
     difficulty = str(arguments.get("difficulty", "hard") or "hard").strip().lower()
@@ -432,6 +429,11 @@ async def build_activity_brief_image_result(
         message=f"{scope_label}{_ACTIVITY_LABELS[activity_type]}情报图已生成",
         extra_prompt="只写一句准确的图片说明。外层系统会发送图片，不要改写图中事实。",
     )
+
+
+def _normalize_activity_type(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    return _ACTIVITY_TYPE_ALIASES.get(normalized, normalized)
 
 
 async def build_collection_event_info_result(

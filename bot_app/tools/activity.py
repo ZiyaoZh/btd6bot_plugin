@@ -116,18 +116,18 @@ def build_activity_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
         ConcreteTool(
             spec={
                 "name": "get_activity_brief_image",
-                "description": "使用 Ninja Kiwi 真实数据和地图资产生成确定性 BTD6 活动情报图。事实型竞速/征程活动图必须使用本工具，而不是通用 AI 生图。",
+                "description": "使用 Ninja Kiwi 真实数据和地图资产生成确定性 BTD6 活动情报图，支持竞速、Boss、征程、每日挑战。事实型活动图必须使用本工具，而不是通用 AI 生图。",
                 "parameters": object_schema(
                     {
                         "activity_type": {
                             "type": "string",
-                            "enum": ["race", "odyssey"],
-                            "description": "首版支持的活动类型。",
+                            "enum": ["race", "boss", "odyssey", "daily"],
+                            "description": "活动类型。",
                         },
                         "difficulty": {
                             "type": "string",
                             "enum": ["easy", "medium", "hard"],
-                            "description": "征程难度，默认 hard；竞速会忽略此参数。",
+                            "description": "征程难度，默认 hard；其他活动会忽略此参数。",
                         },
                         "event_scope": {
                             "type": "string",

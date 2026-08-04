@@ -67,7 +67,7 @@ def build_image_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
                 command="generate_image",
                 data={"reason": "use_activity_brief_tool"},
                 message=(
-                    "事实型 BTD6 活动图不能使用通用 AI 生图；竞速/征程请使用 "
+                    "事实型 BTD6 活动图不能使用通用 AI 生图；活动情报图请使用 "
                     "get_activity_brief_image，排行榜和收集轮换请使用各自的专用工具。"
                 ),
                 extra_prompt="请调用活动情报图、排行榜或收集活动专用工具，不要用 AI 生图伪造事实。",
@@ -206,7 +206,7 @@ def build_image_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
                 "name": "generate_image",
                 "description": (
                     "根据用户要求生成并返回创意图片，适用于同人插画、壁纸、头像、"
-                    "场景画等。事实型 BTD6 活动情报图必须使用 get_activity_brief_image，"
+                    "场景画等。四类事实型 BTD6 活动情报图必须使用 get_activity_brief_image，"
                     "排行榜和收集活动也必须使用各自的专用图片工具。"
                 ),
                 "parameters": object_schema(

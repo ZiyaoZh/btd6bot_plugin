@@ -75,10 +75,10 @@ def activity_brief_selection_error(
     if request is None or request.kind != "infographic" or not request.activity_types:
         return ""
     if len(request.activity_types) != 1:
-        return "一次只能生成一种活动情报图，请先选择竞速或征程。"
+        return "一次只能生成一种活动情报图，请先选择一种活动。"
     requested_type = request.activity_types[0]
-    if requested_type not in {"race", "odyssey"}:
-        return "Boss 和每日挑战的确定性情报图模板尚未开放。"
+    if requested_type not in {"race", "boss", "odyssey", "daily"}:
+        return "不支持该活动类型的确定性情报图。"
     if activity_type != requested_type:
         return "活动情报图类型与用户请求不一致。"
     expected_scope = request.event_scope or "current"

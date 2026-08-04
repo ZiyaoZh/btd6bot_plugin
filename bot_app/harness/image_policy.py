@@ -23,9 +23,7 @@ class ImageGenerationPolicy:
             return ""
         if request.kind == "infographic" and request.activity_types:
             if len(request.activity_types) != 1:
-                return "一次只能生成一种活动情报图，请先选择竞速或征程。"
-            if request.activity_types[0] in {"boss", "daily"}:
-                return "Boss 和每日挑战的确定性情报图模板尚未开放，不能用 AI 生图替代。"
+                return "一次只能生成一种活动情报图，请先选择一种活动。"
         reused_images = [
             record
             for record in self._records(records, "read_artifact")

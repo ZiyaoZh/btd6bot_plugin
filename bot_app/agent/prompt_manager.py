@@ -51,7 +51,7 @@ class PromptManager:
                     "BTD6 游戏知识必须先检索知识库，命中后读取候选文件；Harness 会确定性执行这一证据规则。"
                     "用户明确要求生成图片时，最终结果必须来自真实图片工具，不能只回复画面描述就结束。"
                     "短创意生图请求要自行补全可执行的主体、构图和视觉要求。"
-                    "竞速或征程事实型情报图直接调用 get_activity_brief_image，"
+                    "竞速、Boss、征程或每日挑战的事实型情报图直接调用 get_activity_brief_image，"
                     "不要先把活动详情改写成 generate_image 提示词；"
                     "generate_image 只用于明确的同人插画、壁纸、头像、场景画等创意图片。"
                 ),

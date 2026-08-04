@@ -939,7 +939,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(brief_tool["parameters"]["required"], ["activity_type"])
         self.assertEqual(
             brief_tool["parameters"]["properties"]["activity_type"]["enum"],
-            ["race", "odyssey"],
+            ["race", "boss", "odyssey", "daily"],
         )
         self.assertEqual(
             brief_tool["parameters"]["properties"]["event_scope"]["enum"],
@@ -1831,6 +1831,38 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(command[command.index("--difficulty") + 1], "hard")
         self.assertEqual(command[command.index("--event-scope") + 1], "upcoming")
 
+    async def test_boss_and_daily_use_deterministic_activity_brief_tool(self) -> None:
+        activity_runner = FakeActivityRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin_root = _create_temp_plugin_root(temp_dir)
+            registry = ToolRegistry(
+                _runtime(
+                    plugin_root=plugin_root,
+                    subprocess_runner=activity_runner,
+                )
+            )
+
+            for activity_type, text in (
+                ("boss", "生成当前 Boss 情报图"),
+                ("daily", "生成当前每日挑战情报图"),
+            ):
+                result = await registry.execute(
+                    "get_activity_brief_image",
+                    {"activity_type": activity_type, "event_scope": "current"},
+                    _event(text),
+                )
+                self.assertTrue(result["ok"], activity_type)
+                self.assertEqual(result["response_type"], "image", activity_type)
+
+        self.assertEqual(len(activity_runner.calls), 2)
+        self.assertEqual(
+            [
+                command[command.index("--activity-type") + 1]
+                for command in activity_runner.calls
+            ],
+            ["boss", "daily"],
+        )
+
     async def test_factual_activity_request_cannot_use_generic_image_tool(self) -> None:
         registry = ToolRegistry(_runtime())
 
@@ -1843,6 +1875,19 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["data"]["reason"], "use_activity_brief_tool")
         self.assertIn("get_activity_brief_image", result["message"])
+
+        for activity_type, label in (("boss", "Boss"), ("daily", "每日挑战")):
+            activity_result = await registry.execute(
+                "generate_image",
+                {"prompt": f"制作一张{label}活动情报图"},
+                _event(f"制作当前{label}活动情报图"),
+            )
+            self.assertFalse(activity_result["ok"], activity_type)
+            self.assertEqual(
+                activity_result["data"]["reason"],
+                "use_activity_brief_tool",
+                activity_type,
+            )
 
         contextual_result = await registry.execute(
             "generate_image",
