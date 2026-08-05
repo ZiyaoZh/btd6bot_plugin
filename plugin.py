@@ -116,15 +116,15 @@ class Btd6BotPlugin(NcatBotPlugin):
             )
             return
 
-        if not self._application.enabled:
-            log_flow(
-                stage="schedule.daily_activity_brief.skipped",
-                trace_id=trace_id,
-                reason="bot is stopped",
-            )
-            return
-
         for group_id in group_ids:
+            if not self._application.is_group_enabled(group_id):
+                log_flow(
+                    stage="schedule.daily_activity_brief.skipped",
+                    trace_id=f"{trace_id}.{group_id}",
+                    reason="bot is stopped in this group",
+                    group_id=group_id,
+                )
+                continue
             event_payload = self._build_scheduled_event_payload(
                 group_id=group_id, prompt=prompt
             )

@@ -32,5 +32,5 @@ class AdminControlPayload(TypedDict):
     module: str
     matched: bool
     authorized: bool
-    action: str  # start | stop | proactive_* | model_turns_* | none
+    action: str  # start | stop | proactive_* | model_turns_* | system_commands | none
     reason: str

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 from ncatbot.event.qq import GroupMessageEvent
 
@@ -10,26 +9,44 @@ from .protocol import AdminControlPayload, EventPayload
 from .settings import AppSettings
 
 
+PROACTIVE_CHAT_ENABLED_SETTING = "proactive_chat_enabled"
+
+
 class GroupMessageReceiver:
-    def __init__(self, settings: AppSettings, db: Optional[BotDatabase] = None) -> None:
+    def __init__(self, settings: AppSettings, db: BotDatabase | None = None) -> None:
         self._settings = settings
         self._db = db
-        self._proactive_chat_enabled = settings.proactive_chat_enabled
+        self._volatile_proactive_chat_settings: dict[str, bool] = {}
 
-    def set_proactive_chat_enabled(self, enabled: bool) -> None:
-        self._proactive_chat_enabled = bool(enabled)
+    def set_proactive_chat_enabled(self, group_id: str, enabled: bool) -> None:
+        if self._db is not None:
+            self._db.set_group_setting(
+                group_id,
+                PROACTIVE_CHAT_ENABLED_SETTING,
+                "true" if enabled else "false",
+            )
+            return
+        self._volatile_proactive_chat_settings[str(group_id)] = bool(enabled)
 
-    def is_proactive_chat_enabled(self) -> bool:
-        return self._proactive_chat_enabled
+    def is_proactive_chat_enabled(self, group_id: str) -> bool:
+        if self._db is not None:
+            return self._db.get_group_bool_setting(
+                group_id,
+                PROACTIVE_CHAT_ENABLED_SETTING,
+                default=self._settings.proactive_chat_enabled,
+            )
+        return self._volatile_proactive_chat_settings.get(
+            str(group_id), self._settings.proactive_chat_enabled
+        )
 
     def should_accept(self, msg: GroupMessageEvent) -> bool:
         if str(msg.group_id) not in self._settings.target_group_ids:
             return False
         if self._settings.bot_qq and str(msg.user_id) == self._settings.bot_qq:
             return False
-        if not self._proactive_chat_enabled and not self._contains_bot_mention(str(msg.raw_message or "")):
-            return False
-        return True
+        proactive_enabled = self.is_proactive_chat_enabled(str(msg.group_id))
+        bot_mentioned = self._contains_bot_mention(str(msg.raw_message or ""))
+        return proactive_enabled or bot_mentioned
 
     def should_track_message(self, msg: GroupMessageEvent) -> bool:
         if str(msg.group_id) not in self._settings.target_group_ids:
@@ -59,7 +76,7 @@ class GroupMessageReceiver:
                 "reason": f"missing mention: @{self._settings.bot_name}",
             }
 
-        if not self._is_admin_sender(msg):
+        if action != "system_commands" and not self._is_admin_sender(msg):
             return {
                 "module": "receiver",
                 "matched": True,
@@ -163,4 +180,6 @@ class GroupMessageReceiver:
             return "model_turns_on"
         if t in {"关闭模型过程", "停止模型过程", "关闭过程消息", "停止过程消息"}:
             return "model_turns_off"
+        if t in {"系统指令", "系统指令列表", "管理指令", "管理指令列表"}:
+            return "system_commands"
         return ""

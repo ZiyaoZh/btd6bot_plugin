@@ -590,6 +590,193 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             ["已开启本群模型过程消息", "已关闭本群模型过程消息，仅发送最终结果"],
         )
 
+    async def test_proactive_chat_setting_is_persisted_per_group(self) -> None:
+        settings = AppSettings(
+            **{
+                **_settings().__dict__,
+                "target_group_ids": ("1000", "1001"),
+                "proactive_chat_enabled": True,
+            }
+        )
+
+        def _message(group_id: str, raw_message: str) -> Any:
+            return types.SimpleNamespace(
+                group_id=group_id,
+                user_id="2000",
+                raw_message=raw_message,
+                sender=types.SimpleNamespace(role="member"),
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = BotDatabase(str(Path(temp_dir) / "bot.db"))
+            receiver = GroupMessageReceiver(settings, db=database)
+
+            receiver.set_proactive_chat_enabled("1000", False)
+
+            self.assertFalse(receiver.should_accept(_message("1000", "普通消息")))
+            self.assertTrue(receiver.should_accept(_message("1001", "普通消息")))
+            self.assertTrue(
+                receiver.should_accept(_message("1000", "@机器人 普通消息"))
+            )
+
+            restarted_receiver = GroupMessageReceiver(settings, db=database)
+            self.assertFalse(
+                restarted_receiver.is_proactive_chat_enabled("1000")
+            )
+            self.assertTrue(restarted_receiver.is_proactive_chat_enabled("1001"))
+
+    async def test_admin_start_stop_and_proactive_commands_are_per_group(self) -> None:
+        sent: list[tuple[str, str]] = []
+
+        class _Sender:
+            async def send_group_text(self, **kwargs: Any) -> None:
+                sent.append((kwargs["group_id"], kwargs["text"]))
+
+        class _Usage:
+            def pop_trace_total_tokens(self, trace_id: str) -> int:
+                return 0
+
+        settings = AppSettings(
+            **{
+                **_settings().__dict__,
+                "target_group_ids": ("1000", "1001"),
+                "proactive_chat_enabled": True,
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = BotDatabase(str(Path(temp_dir) / "bot.db"))
+            receiver = GroupMessageReceiver(settings, db=database)
+            application = BotApplication(
+                settings=settings,
+                receiver=receiver,
+                sender=_Sender(),  # type: ignore[arg-type]
+                agent=object(),  # type: ignore[arg-type]
+                llm=_Usage(),  # type: ignore[arg-type]
+                database=database,
+            )
+            msg = types.SimpleNamespace(
+                group_id="1000",
+                user_id="2000",
+                raw_message="@机器人 关闭主动接话",
+                sender=types.SimpleNamespace(role="admin"),
+            )
+
+            self.assertTrue(
+                await application._handle_admin_control(
+                    msg, trace_id="proactive-off"
+                )
+            )
+            self.assertFalse(receiver.is_proactive_chat_enabled("1000"))
+            self.assertTrue(receiver.is_proactive_chat_enabled("1001"))
+
+            msg.raw_message = "@机器人 终止"
+            self.assertTrue(
+                await application._handle_admin_control(msg, trace_id="stop-group")
+            )
+            self.assertFalse(application.is_group_enabled("1000"))
+            self.assertTrue(application.is_group_enabled("1001"))
+
+            restarted_application = BotApplication(
+                settings=settings,
+                receiver=GroupMessageReceiver(settings, db=database),
+                sender=_Sender(),  # type: ignore[arg-type]
+                agent=object(),  # type: ignore[arg-type]
+                llm=_Usage(),  # type: ignore[arg-type]
+                database=database,
+            )
+            self.assertFalse(restarted_application.is_group_enabled("1000"))
+            self.assertTrue(restarted_application.is_group_enabled("1001"))
+
+        self.assertEqual(
+            sent,
+            [
+                ("1000", "已关闭本群主动接话，仅响应@消息"),
+                ("1000", "已终止本群机器人对话处理"),
+            ],
+        )
+
+    async def test_process_event_skips_only_a_disabled_group(self) -> None:
+        class _Agent:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def run(self, *args: Any, **kwargs: Any) -> AgentResponse:
+                self.calls += 1
+                return AgentResponse(text="不应生成")
+
+        agent = _Agent()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = BotDatabase(str(Path(temp_dir) / "bot.db"))
+            database.set_group_setting("1000", "bot_enabled", "false")
+            application = BotApplication(
+                settings=_settings(),
+                receiver=object(),  # type: ignore[arg-type]
+                sender=object(),  # type: ignore[arg-type]
+                agent=agent,  # type: ignore[arg-type]
+                llm=object(),  # type: ignore[arg-type]
+                database=database,
+            )
+
+            await application.process_event(
+                event=_event(),
+                trace_id="disabled-group-event",
+                reply_group_id="1000",
+                at_user_id=None,
+                send_failure_notice=False,
+            )
+
+        self.assertEqual(agent.calls, 0)
+
+    async def test_system_command_list_reports_group_state_to_members(self) -> None:
+        sent: list[str] = []
+
+        class _Sender:
+            async def send_group_text(self, **kwargs: Any) -> None:
+                sent.append(kwargs["text"])
+
+        class _Usage:
+            def pop_trace_total_tokens(self, trace_id: str) -> int:
+                return 0
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = BotDatabase(str(Path(temp_dir) / "bot.db"))
+            database.set_group_setting("1000", "bot_enabled", "false")
+            database.set_group_setting("1000", "proactive_chat_enabled", "false")
+            database.set_group_setting(
+                "1000", "model_turn_messages_enabled", "true"
+            )
+            receiver = GroupMessageReceiver(_settings(), db=database)
+            application = BotApplication(
+                settings=_settings(),
+                receiver=receiver,
+                sender=_Sender(),  # type: ignore[arg-type]
+                agent=object(),  # type: ignore[arg-type]
+                llm=_Usage(),  # type: ignore[arg-type]
+                database=database,
+            )
+            msg = types.SimpleNamespace(
+                group_id="1000",
+                user_id="2000",
+                raw_message="@机器人 系统指令列表",
+                sender=types.SimpleNamespace(role="member"),
+            )
+
+            control = receiver.parse_admin_control(msg)
+            self.assertTrue(control["matched"])
+            self.assertTrue(control["authorized"])
+            self.assertEqual(control["action"], "system_commands")
+            await application.handle_group_message(msg)
+
+            msg.raw_message = "@机器人 启动"
+            self.assertFalse(receiver.parse_admin_control(msg)["authorized"])
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("@机器人 系统指令列表", sent[0])
+        self.assertIn("对话处理：关闭", sent[0])
+        self.assertIn("主动接话：关闭", sent[0])
+        self.assertIn("模型过程消息：开启", sent[0])
+
     async def test_tool_executor_rejects_invalid_schema_before_handler(self) -> None:
         registry = ToolRegistry(_runtime())
         executor = ToolExecutor(registry)

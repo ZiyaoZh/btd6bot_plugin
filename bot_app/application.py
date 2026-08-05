@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import traceback
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -21,6 +19,7 @@ from .settings import AppSettings
 
 
 MODEL_TURN_MESSAGES_SETTING = "model_turn_messages_enabled"
+BOT_ENABLED_SETTING = "bot_enabled"
 
 
 class BotApplication:
@@ -46,12 +45,24 @@ class BotApplication:
         self._database = database
         self._sessions = sessions or SessionLockManager()
         self._runs = runs or InMemoryRunStore()
-        self._enabled = True
+        self._volatile_group_enabled_settings: dict[str, bool] = {}
         self._volatile_model_turn_settings: dict[str, bool] = {}
 
     @property
     def enabled(self) -> bool:
-        return self._enabled
+        return any(
+            self.is_group_enabled(group_id)
+            for group_id in self.settings.target_group_ids
+        )
+
+    def is_group_enabled(self, group_id: str) -> bool:
+        if self._database is not None:
+            return self._database.get_group_bool_setting(
+                group_id,
+                BOT_ENABLED_SETTING,
+                default=True,
+            )
+        return self._volatile_group_enabled_settings.get(str(group_id), True)
 
     async def handle_group_message(self, msg: Any) -> None:
         trace_id = uuid4().hex[:12]
@@ -82,9 +93,12 @@ class BotApplication:
 
         if await self._handle_admin_control(msg, trace_id=trace_id):
             return
-        if not self._enabled:
+        if not self.is_group_enabled(group_id):
             log_flow(
-                stage="receiver.rejected", trace_id=trace_id, reason="bot is stopped"
+                stage="receiver.rejected",
+                trace_id=trace_id,
+                reason="bot is stopped in this group",
+                group_id=group_id,
             )
             return
 
@@ -133,6 +147,16 @@ class BotApplication:
         at_user_id: str | None,
         send_failure_notice: bool,
     ) -> None:
+        if not self.is_group_enabled(reply_group_id):
+            log_flow(
+                stage="application.event_skipped",
+                trace_id=trace_id,
+                reason="bot is stopped in this group",
+                group_id=reply_group_id,
+                event_type=event["event_type"],
+            )
+            return
+
         session_id = f"{event['group_id']}:{event['user_id']}"
         show_model_turns = self._model_turn_messages_enabled(reply_group_id)
         self._runs.start(trace_id, session_id)
@@ -248,31 +272,30 @@ class BotApplication:
         group_id = str(msg.group_id)
         user_id = str(msg.user_id)
         if not control["authorized"]:
-            text = f"该指令仅限群主/管理员在带@{self.settings.bot_name}时使用"
+            if control["reason"].startswith("missing mention"):
+                text = f"使用系统指令时请带@{self.settings.bot_name}"
+            else:
+                text = f"该指令仅限群主/管理员在带@{self.settings.bot_name}时使用"
         elif control["action"] == "stop":
-            self._enabled = False
-            text = "已终止机器人对话处理"
+            self._set_group_enabled(group_id, False)
+            text = "已终止本群机器人对话处理"
         elif control["action"] == "start":
-            self._enabled = True
-            text = "已启动机器人对话处理"
+            self._set_group_enabled(group_id, True)
+            text = "已启动本群机器人对话处理"
         elif control["action"] == "proactive_on":
-            self._receiver.set_proactive_chat_enabled(True)
-            _persist_env_bool(
-                self.settings.env_file, "BOT_PROACTIVE_CHAT_ENABLED", True
-            )
-            text = "已开启主动接话"
+            self._receiver.set_proactive_chat_enabled(group_id, True)
+            text = "已开启本群主动接话"
         elif control["action"] == "proactive_off":
-            self._receiver.set_proactive_chat_enabled(False)
-            _persist_env_bool(
-                self.settings.env_file, "BOT_PROACTIVE_CHAT_ENABLED", False
-            )
-            text = "已关闭主动接话，仅响应@消息"
+            self._receiver.set_proactive_chat_enabled(group_id, False)
+            text = "已关闭本群主动接话，仅响应@消息"
         elif control["action"] == "model_turns_on":
             self._set_model_turn_messages_enabled(group_id, True)
             text = "已开启本群模型过程消息"
         elif control["action"] == "model_turns_off":
             self._set_model_turn_messages_enabled(group_id, False)
             text = "已关闭本群模型过程消息，仅发送最终结果"
+        elif control["action"] == "system_commands":
+            text = self._format_system_command_list(group_id)
         else:
             return False
 
@@ -284,6 +307,40 @@ class BotApplication:
         log_flow(stage="sender.sent", trace_id=trace_id, reply=text)
         return True
 
+    def _set_group_enabled(self, group_id: str, enabled: bool) -> None:
+        if self._database is not None:
+            self._database.set_group_setting(
+                group_id,
+                BOT_ENABLED_SETTING,
+                "true" if enabled else "false",
+            )
+            return
+        self._volatile_group_enabled_settings[str(group_id)] = bool(enabled)
+
+    def _format_system_command_list(self, group_id: str) -> str:
+        mention = f"@{self.settings.bot_name}"
+        bot_status = "开启" if self.is_group_enabled(group_id) else "关闭"
+        proactive_status = (
+            "开启" if self._receiver.is_proactive_chat_enabled(group_id) else "关闭"
+        )
+        model_turn_status = (
+            "开启" if self._model_turn_messages_enabled(group_id) else "关闭"
+        )
+        return "\n".join(
+            [
+                "本群系统指令（开关操作仅限群主/管理员）：",
+                f"{mention} 启动 / 终止",
+                f"{mention} 开启主动接话 / 关闭主动接话",
+                f"{mention} 开启模型过程 / 关闭模型过程",
+                f"{mention} 系统指令列表",
+                "",
+                "本群当前状态：",
+                f"对话处理：{bot_status}",
+                f"主动接话：{proactive_status}",
+                f"模型过程消息：{model_turn_status}",
+            ]
+        )
+
     def _model_turn_messages_enabled(self, group_id: str) -> bool:
         if self._database is not None:
             return self._database.get_group_bool_setting(
@@ -293,9 +350,7 @@ class BotApplication:
             )
         return self._volatile_model_turn_settings.get(str(group_id), False)
 
-    def _set_model_turn_messages_enabled(
-        self, group_id: str, enabled: bool
-    ) -> None:
+    def _set_model_turn_messages_enabled(self, group_id: str, enabled: bool) -> None:
         if self._database is not None:
             self._database.set_group_setting(
                 group_id,
@@ -345,24 +400,3 @@ class BotApplication:
 
 def _format_model_turn(update: ModelTurnUpdate, *, max_chars: int) -> str:
     return update.content.strip()[: max(1, int(max_chars))]
-
-
-def _persist_env_bool(env_file: str, key: str, enabled: bool) -> None:
-    path = Path(env_file)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    value = "true" if enabled else "false"
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
-    updated = False
-    new_lines: list[str] = []
-    for line in lines:
-        if pattern.match(line):
-            new_lines.append(f"{key}={value}")
-            updated = True
-        else:
-            new_lines.append(line)
-    if not updated:
-        if new_lines and new_lines[-1].strip():
-            new_lines.append("")
-        new_lines.append(f"{key}={value}")
-    path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
