@@ -14,14 +14,14 @@
 - 多轮工具编排：支持在一次对话中连续调用多个工具指令，例如先检索知识库，再读取候选文件。
 - 群聊降噪：无须回复的群聊消息通过 `ignore_message` 工具显式忽略。
 - AI 生图：明确的独立生图请求由 Harness 保证调用图片工具；短提示词在服务端补全，私有接口地址、密钥和模型配置不会暴露给 Agent。
-- 活动情报图：竞速、Boss、征程和每日挑战使用 Ninja Kiwi 结构化数据、真实地图缩略图与 Pillow 专用模板生成确定性 PNG；事实型活动图不交给通用 AI 生图。
+- 活动情报图：竞速、Boss、征程和每日挑战使用 Ninja Kiwi 结构化数据、真实地图缩略图与 Pillow 专用模板生成确定性 PNG，同时支持一张四类活动总览图；事实型活动图不交给通用 AI 生图。
 - Agent 产物目录：活动报告、排行榜、收集活动图片和 AI 图片统一进入 `data/artifacts/`；当前有效清单会直接提供给模型，由模型结合标题、摘要、标签和日期判断是否复用。
 - BTD6 游戏能力：
 	- 游戏知识检索与安全文件读取。
 	- 活动详情查询（race/boss/odyssey/daily）。
-	- 四类活动情报图（current/upcoming/latest，征程支持 easy/medium/hard）。
+	- 四类单项活动情报图及全活动总览图（current/upcoming/latest，征程支持 easy/medium/hard）。
 	- 活动排行榜查询（race/boss-standard/boss-elite），支持图片输出。
-	- 每天 07:00 自动发送当天活动简报，走现有 Agent 工具调用链路生成文案。
+	- 每天 07:00 自动发送当天活动总览图，走现有 Agent 工具调用与图片发送链路。
 - 会话与数据管理：
 	- 群消息写入 SQLite。
 	- 今日活跃榜、最近消息总结等统计能力。
@@ -87,9 +87,9 @@ event -> context -> model -> tool call -> validate/execute -> observation
 
 ## 定时活动简报
 
-插件加载时会注册一个每天 `07:00` 的定时任务，向目标群发送“当天活动简报”。
+插件加载时会注册一个每天 `07:00` 的定时任务，向目标群发送一张“当天活动总览图”。图片简要覆盖竞速、Boss、征程和每日挑战；详细规则仍由各单项情报图提供。
 
-- 简报不是在定时任务里直接硬编码调用活动指令，而是构造一条系统事件消息，继续走统一的 Model + Harness 链路。
+- 简报构造系统事件并继续走统一的 Model + Harness 链路；Harness 会为该定时事件确定性调用一次 `get_activity_brief_image(all/current/hard)`，模型只需生成简短图片说明。
 - 默认发送到 `BOT_TARGET_GROUP_IDS`（未配置时回退到 `BOT_TARGET_GROUP_ID`）中的群。
 - 如需覆盖默认行为，可修改插件配置 `data/btd6bot_plugin/config.yaml` 中的 `daily_activity_brief`。
 
@@ -100,7 +100,7 @@ daily_activity_brief:
   enabled: true
   schedule: "07:00"
   group_ids: []
-  prompt: "请生成今天的 BTD6 活动简报，并直接整理成适合发送到群里的晨间播报。"
+  prompt: "请生成今天的 BTD6 每日活动早报，调用 get_activity_brief_image 并使用 activity_type=all。"
 ```
 
 说明：
@@ -108,7 +108,7 @@ daily_activity_brief:
 - `enabled`: 是否启用定时简报。
 - `schedule`: 每日触发时间，格式如 `07:00`。
 - `group_ids`: 可选，留空时使用机器人默认目标群列表。
-- `prompt`: 发给大模型的固定提示词，可按你的群风格自行调整。
+- `prompt`: 发给大模型的固定提示词，可按群风格调整图片说明；默认要求调用 `get_activity_brief_image(activity_type=all)` 发送总览图。历史默认纯文本提示会在加载时自动迁移为图片早报提示，自定义提示保持不变。
 
 ## 入口建议
 
@@ -145,7 +145,7 @@ Agent 产生的可复用文件统一保存在 `data/artifacts/`，不再由各�
 
 ## AI 生图配置
 
-`generate_image` 使用 OpenAI-compatible Images API，只处理同人插画、壁纸、头像、场景画等创意视觉。竞速、Boss、征程和每日挑战的事实型情报图由 `get_activity_brief_image` 使用真实数据确定性绘制，不进入本接口。Agent 可见的 AI 生图参数只有 `prompt`；Harness 和工具服务会对短提示词补全主体、构图、场景和光线。以下配置只在服务端读取，不会出现在工具 schema 或工具结果中：
+`generate_image` 使用 OpenAI-compatible Images API，只处理同人插画、壁纸、头像、场景画等创意视觉。竞速、Boss、征程、每日挑战的单项情报图及四类活动总览图由 `get_activity_brief_image` 使用真实数据确定性绘制，不进入本接口。Agent 可见的 AI 生图参数只有 `prompt`；Harness 和工具服务会对短提示词补全主体、构图、场景和光线。以下配置只在服务端读取，不会出现在工具 schema 或工具结果中：
 
 - `IMAGE_GEN_API_BASE_URL`: 接口根地址，例如 `https://api.openai.com/v1`。也可直接填写以 `/images/generations` 结尾的完整地址。
 - `IMAGE_GEN_API_KEY`: 生图接口密钥。

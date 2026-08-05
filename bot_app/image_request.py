@@ -6,6 +6,8 @@ from typing import Any
 
 from .image_prompting import is_infographic_request
 
+OVERVIEW_ACTIVITY_TYPES = ("race", "boss", "odyssey", "daily")
+
 
 @dataclass(frozen=True)
 class ImageRequest:
@@ -74,17 +76,18 @@ def activity_brief_selection_error(
 ) -> str:
     if request is None or request.kind != "infographic" or not request.activity_types:
         return ""
-    if len(request.activity_types) != 1:
-        return "一次只能生成一种活动情报图，请先选择一种活动。"
-    requested_type = request.activity_types[0]
-    if requested_type not in {"race", "boss", "odyssey", "daily"}:
+    is_overview = set(request.activity_types) == set(OVERVIEW_ACTIVITY_TYPES)
+    if len(request.activity_types) != 1 and not is_overview:
+        return "可生成单项活动图或包含全部四类活动的总览图，请调整活动范围。"
+    requested_type = "all" if is_overview else request.activity_types[0]
+    if requested_type not in {"all", "race", "boss", "odyssey", "daily"}:
         return "不支持该活动类型的确定性情报图。"
     if activity_type != requested_type:
         return "活动情报图类型与用户请求不一致。"
     expected_scope = request.event_scope or "current"
     if event_scope != expected_scope:
         return "活动情报图范围与用户请求不一致。"
-    if requested_type == "odyssey":
+    if requested_type in {"all", "odyssey"}:
         expected_difficulty = request.difficulty or "hard"
         if difficulty != expected_difficulty:
             return "征程情报图难度与用户请求不一致。"

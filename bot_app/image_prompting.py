@@ -16,6 +16,8 @@ _INFOGRAPHIC_TERMS = (
     "攻略图",
     "活动图",
     "活动海报",
+    "总览图",
+    "早报图",
     "infographic",
     "info graphic",
 )

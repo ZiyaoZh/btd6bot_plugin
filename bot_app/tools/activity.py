@@ -45,12 +45,18 @@ def build_activity_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
         activity_type = str(arguments.get("activity_type", "") or "").strip().lower()
         difficulty = str(arguments.get("difficulty", "hard") or "hard").strip().lower()
         event_scope = str(arguments.get("event_scope", "current") or "current").strip().lower()
-        selection_error = activity_brief_selection_error(
-            classify_image_request(str(event.get("text", "") or "")),
-            activity_type=activity_type,
-            difficulty=difficulty,
-            event_scope=event_scope,
+        scheduled_overview = (
+            event.get("event_type") == "scheduled_daily_activity_brief"
+            and activity_type == "all"
         )
+        selection_error = ""
+        if not scheduled_overview:
+            selection_error = activity_brief_selection_error(
+                classify_image_request(str(event.get("text", "") or "")),
+                activity_type=activity_type,
+                difficulty=difficulty,
+                event_scope=event_scope,
+            )
         if selection_error:
             return fail_result(
                 module="tool.activity",
@@ -62,7 +68,7 @@ def build_activity_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
                     "reason": "activity_selection_mismatch",
                 },
                 message=selection_error,
-                extra_prompt="请按用户要求选择单一活动类型、范围和征程难度后重试。",
+                extra_prompt="请按用户要求选择单项活动或 all 总览、范围和征程难度后重试。",
             )
         return await build_activity_brief_image_result(
             api_processor_root=dependencies.api_processor_root,
@@ -116,18 +122,18 @@ def build_activity_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
         ConcreteTool(
             spec={
                 "name": "get_activity_brief_image",
-                "description": "使用 Ninja Kiwi 真实数据和地图资产生成确定性 BTD6 活动情报图，支持竞速、Boss、征程、每日挑战。事实型活动图必须使用本工具，而不是通用 AI 生图。",
+                "description": "使用 Ninja Kiwi 真实数据和地图资产生成确定性 BTD6 活动情报图。all 生成竞速、Boss、征程、每日挑战的简洁总览图，也支持四类活动的单项详图。事实型活动图必须使用本工具，而不是通用 AI 生图。",
                 "parameters": object_schema(
                     {
                         "activity_type": {
                             "type": "string",
-                            "enum": ["race", "boss", "odyssey", "daily"],
-                            "description": "活动类型。",
+                            "enum": ["all", "race", "boss", "odyssey", "daily"],
+                            "description": "活动类型；all 表示四类活动总览。",
                         },
                         "difficulty": {
                             "type": "string",
                             "enum": ["easy", "medium", "hard"],
-                            "description": "征程难度，默认 hard；其他活动会忽略此参数。",
+                            "description": "征程难度，默认 hard；all 会将其用于征程摘要。",
                         },
                         "event_scope": {
                             "type": "string",

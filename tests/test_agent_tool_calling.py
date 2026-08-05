@@ -693,6 +693,13 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             generic_activity.activity_types,  # type: ignore[union-attr]
             ("race", "boss", "odyssey", "daily"),
         )
+        daily_overview = classify_image_request("生成今天的 BTD6 活动早报图")
+        self.assertIsNotNone(daily_overview)
+        self.assertEqual(daily_overview.kind, "infographic")  # type: ignore[union-attr]
+        self.assertEqual(
+            daily_overview.activity_types,  # type: ignore[union-attr]
+            ("race", "boss", "odyssey", "daily"),
+        )
         self.assertEqual(classify_image_request("画一张 race car 图片").kind, "creative")  # type: ignore[union-attr]
         self.assertEqual(
             classify_image_request("画一只猴子参加竞速比赛的卡通图").kind,  # type: ignore[union-attr]
@@ -939,7 +946,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(brief_tool["parameters"]["required"], ["activity_type"])
         self.assertEqual(
             brief_tool["parameters"]["properties"]["activity_type"]["enum"],
-            ["race", "boss", "odyssey", "daily"],
+            ["all", "race", "boss", "odyssey", "daily"],
         )
         self.assertEqual(
             brief_tool["parameters"]["properties"]["event_scope"]["enum"],
@@ -1862,6 +1869,74 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             ],
             ["boss", "daily"],
         )
+
+    async def test_all_activity_overview_uses_one_deterministic_brief_image(self) -> None:
+        activity_runner = FakeActivityRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin_root = _create_temp_plugin_root(temp_dir)
+            registry = ToolRegistry(
+                _runtime(
+                    plugin_root=plugin_root,
+                    subprocess_runner=activity_runner,
+                )
+            )
+
+            result = await registry.execute(
+                "get_activity_brief_image",
+                {
+                    "activity_type": "all",
+                    "difficulty": "hard",
+                    "event_scope": "current",
+                },
+                _event("生成今天的 BTD6 活动早报图"),
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["response_type"], "image")
+        command = activity_runner.calls[0]
+        self.assertEqual(command[command.index("--activity-type") + 1], "all")
+        self.assertEqual(command[command.index("--difficulty") + 1], "hard")
+        self.assertEqual(command[command.index("--event-scope") + 1], "current")
+
+    async def test_scheduled_daily_brief_policy_always_generates_overview_image(
+        self,
+    ) -> None:
+        activity_runner = FakeActivityRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin_root = _create_temp_plugin_root(temp_dir)
+            registry = ToolRegistry(
+                _runtime(
+                    plugin_root=plugin_root,
+                    subprocess_runner=activity_runner,
+                )
+            )
+            llm = FakeLLM([_assistant_response("早上好，今天的活动都在图里。")])
+            runner = AgentRunner(
+                llm=llm,  # type: ignore[arg-type]
+                memory=GroupChatMemory(history_turns=3),
+                settings=_settings(),
+                tool_registry=registry,
+                context_manager=FakeContextManager(),  # type: ignore[arg-type]
+            )
+            event = {
+                **_event("请按竞速活动生成一张情报图"),
+                "module": "scheduler",
+                "event_type": "scheduled_daily_activity_brief",
+                "user_id": "__daily_activity_brief__",
+            }
+
+            response = await runner.run(event, trace_id="scheduled-overview")
+
+        self.assertEqual(
+            [item.name for item in response.tool_calls],
+            ["get_activity_brief_image"],
+        )
+        self.assertEqual(response.response_type, "image")
+        self.assertEqual(response.text, "早上好，今天的活动都在图里。")
+        command = activity_runner.calls[0]
+        self.assertEqual(command[command.index("--activity-type") + 1], "all")
+        self.assertEqual(command[command.index("--difficulty") + 1], "hard")
+        self.assertEqual(command[command.index("--event-scope") + 1], "current")
 
     async def test_factual_activity_request_cannot_use_generic_image_tool(self) -> None:
         registry = ToolRegistry(_runtime())

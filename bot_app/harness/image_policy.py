@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 from ..agent.types import ToolCallRecord
-from ..image_request import classify_image_request
+from ..image_request import OVERVIEW_ACTIVITY_TYPES, classify_image_request
 from ..protocol import EventPayload
 from .types import ToolInvocation
 
@@ -12,9 +14,23 @@ class ImageGenerationPolicy:
     def required_tool_calls(
         self, event: EventPayload, records: list[ToolCallRecord]
     ) -> list[ToolInvocation]:
+        if event.get("event_type") == "scheduled_daily_activity_brief":
+            attempts = self._records(records, "get_activity_brief_image")
+            if not attempts:
+                return [
+                    ToolInvocation(
+                        id=f"policy_activity_overview_{uuid4().hex[:12]}",
+                        name="get_activity_brief_image",
+                        arguments={
+                            "activity_type": "all",
+                            "difficulty": "hard",
+                            "event_scope": "current",
+                        },
+                        source="policy",
+                    )
+                ]
         # The dynamic artifact catalog must be reviewed by the Model before any
-        # acquisition or generation choice is made.
-        del event, records
+        # acquisition or generation choice is made for ordinary chat requests.
         return []
 
     def final_override(self, event: EventPayload, records: list[ToolCallRecord]) -> str:
@@ -22,8 +38,9 @@ class ImageGenerationPolicy:
         if request is None:
             return ""
         if request.kind == "infographic" and request.activity_types:
-            if len(request.activity_types) != 1:
-                return "一次只能生成一种活动情报图，请先选择一种活动。"
+            is_overview = set(request.activity_types) == set(OVERVIEW_ACTIVITY_TYPES)
+            if len(request.activity_types) != 1 and not is_overview:
+                return "可生成单项活动图或包含全部四类活动的总览图，请调整活动范围。"
         reused_images = [
             record
             for record in self._records(records, "read_artifact")
@@ -62,6 +79,8 @@ class ImageGenerationPolicy:
                 for activity_type in request.activity_types
                 for record in self._activity_records(records, activity_type)
             ]
+            if set(request.activity_types) == set(OVERVIEW_ACTIVITY_TYPES):
+                attempted.extend(self._activity_records(records, "all"))
             if attempted:
                 if not any(record.result.get("ok", False) for record in attempted):
                     return "活动信息获取失败，暂时不能可靠生成情报图，请稍后重试。"

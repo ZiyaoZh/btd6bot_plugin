@@ -68,14 +68,14 @@ _FEATURE_CATALOG: list[dict[str, Any]] = [
     },
     {
         "name": "get_activity_brief_image",
-        "aliases": ["activity_brief", "活动情报图", "竞速图", "Boss图", "征程图", "每日挑战图"],
-        "description": "使用真实地图和结构化活动数据生成确定性活动情报图",
+        "aliases": ["activity_brief", "活动情报图", "活动总览图", "每日早报图", "竞速图", "Boss图", "征程图", "每日挑战图"],
+        "description": "使用真实地图和结构化活动数据生成确定性单项活动图或四类活动总览图",
         "arguments": {
-            "activity_type": "race|boss|odyssey|daily",
-            "difficulty": "easy|medium|hard，征程默认 hard",
+            "activity_type": "all|race|boss|odyssey|daily，all 为总览",
+            "difficulty": "easy|medium|hard，征程或总览默认 hard",
             "event_scope": "current|upcoming|latest，默认 current",
         },
-        "examples": ["生成当前竞速情报图", "生成当前 Boss 情报图", "生成下一期困难征程图", "生成每日挑战图"],
+        "examples": ["生成今天的全部活动总览图", "生成当前竞速情报图", "生成当前 Boss 情报图", "生成下一期困难征程图", "生成每日挑战图"],
     },
     {
         "name": "get_activity_leaderboard",

@@ -17,6 +17,7 @@ from .subprocess_runner import AsyncioSubprocessRunner, AsyncSubprocessRunner
 
 
 _ACTIVITY_LABELS = {
+    "all": "全活动总览",
     "race": "竞速",
     "boss": "Boss",
     "odyssey": "征程",
@@ -25,7 +26,13 @@ _ACTIVITY_LABELS = {
     "boss-elite": "精英 Boss",
 }
 _ACTIVITY_TYPES = {"race", "boss", "odyssey", "daily"}
+_BRIEF_ACTIVITY_TYPES = _ACTIVITY_TYPES | {"all"}
 _ACTIVITY_TYPE_ALIASES = {
+    "all": "all",
+    "全部": "all",
+    "全部活动": "all",
+    "总览": "all",
+    "活动总览": "all",
     "竞速": "race",
     "race": "race",
     "boss": "boss",
@@ -289,12 +296,12 @@ async def build_activity_brief_image_result(
 ) -> CommandResultPayload:
     raw_type = str(arguments.get("activity_type", "") or "").strip().lower()
     activity_type = _normalize_activity_type(raw_type)
-    if activity_type not in _ACTIVITY_TYPES:
+    if activity_type not in _BRIEF_ACTIVITY_TYPES:
         return fail_result(
             module=module,
             command="get_activity_brief_image",
             data={"activity_type": raw_type},
-            message="activity_type 仅支持 race、boss、odyssey、daily。",
+            message="activity_type 仅支持 all、race、boss、odyssey、daily。",
             extra_prompt="请提示用户给出合法活动类型。",
         )
 
@@ -322,9 +329,12 @@ async def build_activity_brief_image_result(
     title_qualifier = scope_label
     if activity_type == "odyssey":
         title_qualifier += difficulty_label
-    title = f"BTD6 {title_qualifier}{_ACTIVITY_LABELS[activity_type]}活动情报图"
+    if activity_type == "all":
+        title = f"BTD6 {title_qualifier}{_ACTIVITY_LABELS[activity_type]}情报图"
+    else:
+        title = f"BTD6 {title_qualifier}{_ACTIVITY_LABELS[activity_type]}活动情报图"
     tags = ["BTD6", "活动情报图", _ACTIVITY_LABELS[activity_type], scope_label, "图片"]
-    if activity_type == "odyssey":
+    if activity_type in {"all", "odyssey"}:
         tags.append(difficulty_label)
 
     run_result = await run_btd6_api_cli(

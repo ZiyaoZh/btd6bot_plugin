@@ -14,7 +14,7 @@ from .bot_app.logging_utils import log_flow
 from .bot_app.settings import AppSettings, load_settings
 
 
-DEFAULT_DAILY_ACTIVITY_BRIEF_PROMPT = (
+LEGACY_DAILY_ACTIVITY_BRIEF_PROMPT = (
     "请生成今天的 BTD6 活动简报，并直接整理成适合发送到群里的晨间播报。"
     "你必须优先调用现有活动查询能力，自行完成信息收集后再给最终答复。"
     "请至少覆盖 race、boss、odyssey、daily 四类活动；某一类如果暂时查不到，要明确说明缺失，不要编造。"
@@ -22,6 +22,13 @@ DEFAULT_DAILY_ACTIVITY_BRIEF_PROMPT = (
     "先用一句简短开场，再按活动分段概括名称、时间、关键规则或亮点。"
     "不要发送排行榜，不要图片，不要要求用户补充信息。"
     "整体保持简洁，控制在 600 字以内。"
+)
+DEFAULT_DAILY_ACTIVITY_BRIEF_PROMPT = (
+    "请生成今天的 BTD6 每日活动早报。"
+    "必须调用 get_activity_brief_image，并传入 activity_type=all、event_scope=current、difficulty=hard，"
+    "用一张总览图覆盖竞速、Boss、征程和每日挑战；不要分别生成四张详图。"
+    "总览图已经包含早报所需事实，不要再调用活动详情、排行榜或通用 AI 生图工具。"
+    "工具成功后只输出一句简短自然的晨间图片说明，不要复述图中内容，不要输出文件路径。"
 )
 
 
@@ -145,6 +152,8 @@ class Btd6BotPlugin(NcatBotPlugin):
         raw = self.get_config("daily_activity_brief", {})
         config = raw if isinstance(raw, dict) else {}
         merged = {**defaults, **config}
+        if str(merged.get("prompt", "") or "").strip() == LEGACY_DAILY_ACTIVITY_BRIEF_PROMPT:
+            merged["prompt"] = DEFAULT_DAILY_ACTIVITY_BRIEF_PROMPT
         group_ids = merged.get("group_ids", [])
         if not isinstance(group_ids, list):
             group_ids = []
