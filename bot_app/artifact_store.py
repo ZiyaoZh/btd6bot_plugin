@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 from uuid import uuid4
 
 
@@ -387,6 +387,34 @@ class ArtifactStore:
                 deleted=deleted,
                 staging_deleted=staging_deleted,
             )
+
+    def invalidate_active(
+        self,
+        *,
+        kinds: Iterable[str] = (),
+        metadata_matcher: Callable[[dict[str, Any]], bool] | None = None,
+        now: datetime | None = None,
+    ) -> int:
+        current = _as_utc(now)
+        normalized_kinds = {
+            _normalize_kind(kind) for kind in kinds if str(kind or "").strip()
+        }
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM artifacts WHERE status = ?",
+                (ACTIVE_STATUS,),
+            ).fetchall()
+            invalidated = 0
+            for row in rows:
+                record = self._hydrate_record_locked(row)
+                if normalized_kinds and record.kind not in normalized_kinds:
+                    continue
+                if metadata_matcher is not None and not metadata_matcher(record.metadata):
+                    continue
+                self._archive_record_locked(row, current)
+                invalidated += 1
+            self._conn.commit()
+            return invalidated
 
     def _init_schema(self) -> None:
         with self._lock:

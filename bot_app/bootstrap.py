@@ -65,4 +65,5 @@ def build_application(
         agent=agent,
         llm=llm,
         database=db,
+        artifact_store=dependencies.artifact_store,
     )

@@ -1137,7 +1137,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             brief_tool["parameters"]["properties"]["event_scope"]["enum"],
-            ["current", "upcoming", "latest"],
+            ["current", "upcoming", "ended", "relevant", "latest"],
         )
 
     async def test_concrete_social_tool_handler_uses_injected_db(self) -> None:
@@ -2073,7 +2073,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "activity_type": "all",
                     "difficulty": "hard",
-                    "event_scope": "current",
+                    "event_scope": "relevant",
                 },
                 _event("生成今天的 BTD6 活动早报图"),
             )
@@ -2083,7 +2083,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         command = activity_runner.calls[0]
         self.assertEqual(command[command.index("--activity-type") + 1], "all")
         self.assertEqual(command[command.index("--difficulty") + 1], "hard")
-        self.assertEqual(command[command.index("--event-scope") + 1], "current")
+        self.assertEqual(command[command.index("--event-scope") + 1], "relevant")
 
     async def test_scheduled_daily_brief_policy_always_generates_overview_image(
         self,
@@ -2123,7 +2123,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         command = activity_runner.calls[0]
         self.assertEqual(command[command.index("--activity-type") + 1], "all")
         self.assertEqual(command[command.index("--difficulty") + 1], "hard")
-        self.assertEqual(command[command.index("--event-scope") + 1], "current")
+        self.assertEqual(command[command.index("--event-scope") + 1], "relevant")
 
     async def test_factual_activity_request_cannot_use_generic_image_tool(self) -> None:
         registry = ToolRegistry(_runtime())

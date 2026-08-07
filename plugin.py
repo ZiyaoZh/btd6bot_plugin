@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
+import random
+import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -12,6 +15,7 @@ from ncatbot.plugin import NcatBotPlugin
 from .bot_app.bootstrap import build_application
 from .bot_app.logging_utils import log_flow
 from .bot_app.settings import AppSettings, load_settings
+from .bot_app.tools.activity_service import run_btd6_api_cli
 
 
 LEGACY_DAILY_ACTIVITY_BRIEF_PROMPT = (
@@ -25,7 +29,7 @@ LEGACY_DAILY_ACTIVITY_BRIEF_PROMPT = (
 )
 DEFAULT_DAILY_ACTIVITY_BRIEF_PROMPT = (
     "请生成今天的 BTD6 每日活动早报。"
-    "必须调用 get_activity_brief_image，并传入 activity_type=all、event_scope=current、difficulty=hard，"
+    "必须调用 get_activity_brief_image，并传入 activity_type=all、event_scope=relevant、difficulty=hard，"
     "用一张总览图覆盖竞速、Boss、征程和每日挑战；不要分别生成四张详图。"
     "总览图已经包含早报所需事实，不要再调用活动详情、排行榜或通用 AI 生图工具。"
     "工具成功后只输出一句简短自然的晨间图片说明，不要复述图中内容，不要输出文件路径。"
@@ -73,6 +77,9 @@ class Btd6BotPlugin(NcatBotPlugin):
         )
         self._daily_activity_brief_config = self._load_daily_activity_brief_config()
         self._register_daily_activity_brief_task()
+        self._activity_discovery_failures = 0
+        self._activity_discovery_next_run = 0.0
+        self._register_activity_discovery_task()
         lifecycle_trace_id = f"{self.name}.lifecycle"
 
         log_flow(
@@ -142,6 +149,66 @@ class Btd6BotPlugin(NcatBotPlugin):
                 send_failure_notice=False,
             )
 
+    async def activity_discovery_task(self) -> None:
+        now = time.monotonic()
+        if now < self._activity_discovery_next_run:
+            return
+        trace_id = uuid4().hex[:12]
+        result = await run_btd6_api_cli(
+            api_processor_root=Path(__file__).resolve().parent / "btd6_api_processor",
+            mode="discover",
+        )
+        if not result.ok:
+            self._activity_discovery_failures += 1
+            backoff = min(3600.0, 300.0 * (2 ** self._activity_discovery_failures))
+            self._activity_discovery_next_run = now + backoff + random.uniform(0, 60)
+            log_flow(
+                stage="schedule.activity_discovery.failed",
+                trace_id=trace_id,
+                failures=self._activity_discovery_failures,
+                retry_after_seconds=int(backoff),
+                error=result.error_message,
+            )
+            return
+
+        self._activity_discovery_failures = 0
+        self._activity_discovery_next_run = now + 300 + random.uniform(-30, 30)
+        manifest_path = next(
+            (Path(path) for path in result.generated_files if path.endswith(".json")),
+            None,
+        )
+        changed_types: list[str] = []
+        partial = False
+        if manifest_path is not None:
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                changed_types = [
+                    str(item)
+                    for item in manifest.get("changed_types", [])
+                    if str(item)
+                ]
+                partial = bool(manifest.get("partial", False))
+            except (OSError, json.JSONDecodeError, AttributeError):
+                partial = True
+
+        invalidated_artifacts = 0
+        if changed_types and self._application.artifact_store is not None:
+            changed = set(changed_types)
+            invalidated_artifacts = self._application.artifact_store.invalidate_active(
+                kinds=("activity.brief", "activity.detail"),
+                metadata_matcher=lambda metadata: (
+                    str(metadata.get("activity_type", "")) == "all"
+                    or str(metadata.get("activity_type", "")) in changed
+                ),
+            )
+        log_flow(
+            stage="schedule.activity_discovery.completed",
+            trace_id=trace_id,
+            changed_types=changed_types,
+            partial=partial,
+            invalidated_artifacts=invalidated_artifacts,
+        )
+
     def _load_daily_activity_brief_config(self) -> dict[str, Any]:
         defaults = {
             "enabled": True,
@@ -190,6 +257,16 @@ class Btd6BotPlugin(NcatBotPlugin):
             target_groups=self._resolve_daily_activity_brief_group_ids(
                 self._daily_activity_brief_config
             ),
+        )
+
+    def _register_activity_discovery_task(self) -> None:
+        added = self.add_scheduled_task("activity_discovery_task", 60)
+        log_flow(
+            stage="schedule.activity_discovery.registered",
+            trace_id=f"{self.name}.activity_discovery",
+            interval_seconds=60,
+            target_interval_seconds=300,
+            added=added,
         )
 
     def _resolve_daily_activity_brief_group_ids(

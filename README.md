@@ -19,7 +19,7 @@
 - BTD6 游戏能力：
 	- 游戏知识检索与安全文件读取。
 	- 活动详情查询（race/boss/odyssey/daily）。
-	- 四类单项活动情报图及全活动总览图（current/upcoming/latest，征程支持 easy/medium/hard）。
+	- 四类单项活动情报图及全活动总览图（current/upcoming/ended/relevant；latest 仅兼容旧调用，征程支持 easy/medium/hard）。
 	- 活动排行榜查询（race/boss-standard/boss-elite），支持图片输出。
 	- 每天 07:00 自动发送当天活动总览图，走现有 Agent 工具调用与图片发送链路。
 - 会话与数据管理：
@@ -101,7 +101,8 @@ event -> context -> model -> tool call -> validate/execute -> observation
 
 插件加载时会注册一个每天 `07:00` 的定时任务，向目标群发送一张“当天活动总览图”。图片简要覆盖竞速、Boss、征程和每日挑战；详细规则仍由各单项情报图提供。
 
-- 简报构造系统事件并继续走统一的 Model + Harness 链路；Harness 会为该定时事件确定性调用一次 `get_activity_brief_image(all/current/hard)`，模型只需生成简短图片说明。
+- 简报构造系统事件并继续走统一的 Model + Harness 链路；Harness 会为该定时事件确定性调用一次 `get_activity_brief_image(all/relevant/hard)`，模型只需生成简短图片说明。
+- 后台活动发现任务约每 5 分钟仅检查四类列表；发现 event ID 或生命周期槽位变化时，才失效相关选择、图片和 Agent 产物缓存并预热 metadata。失败时采用指数退避与抖动。
 - 默认发送到 `BOT_TARGET_GROUP_IDS`（未配置时回退到 `BOT_TARGET_GROUP_ID`）中的群。
 - 已通过群内“终止”指令停用的群会跳过简报，其他目标群不受影响。
 - 如需覆盖默认行为，可修改插件配置 `data/btd6bot_plugin/config.yaml` 中的 `daily_activity_brief`。

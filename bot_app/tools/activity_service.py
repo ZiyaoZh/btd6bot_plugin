@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -27,6 +28,14 @@ _ACTIVITY_LABELS = {
 }
 _ACTIVITY_TYPES = {"race", "boss", "odyssey", "daily"}
 _BRIEF_ACTIVITY_TYPES = _ACTIVITY_TYPES | {"all"}
+_EVENT_SCOPES = {"current", "upcoming", "ended", "relevant", "latest"}
+_EVENT_SCOPE_LABELS = {
+    "current": "当前",
+    "upcoming": "下一期",
+    "ended": "最近结束",
+    "relevant": "当前相关",
+    "latest": "最新发布",
+}
 _ACTIVITY_TYPE_ALIASES = {
     "all": "all",
     "全部": "all",
@@ -82,16 +91,16 @@ async def build_activity_detail_result(
             extra_prompt="请提示用户给出合法征程难度。",
         )
     event_scope = str(arguments.get("event_scope", "latest") or "latest").strip().lower()
-    if event_scope not in {"current", "upcoming", "latest"}:
+    if event_scope not in _EVENT_SCOPES:
         return fail_result(
             module=module,
             command="get_activity_detail",
             data={"mode": "detail", "activity_type": detail_type, "event_scope": event_scope},
-            message="event_scope 仅支持 current、upcoming、latest。",
+            message="event_scope 仅支持 current、upcoming、ended、relevant、latest。",
             extra_prompt="请提示用户给出合法活动范围。",
         )
 
-    scope_label = {"current": "当前", "upcoming": "下一期", "latest": "最新发布"}[event_scope]
+    scope_label = _EVENT_SCOPE_LABELS[event_scope]
     difficulty_label = {"easy": "简单", "medium": "中级", "hard": "困难"}[difficulty]
     tags = ["BTD6", "活动详情", _ACTIVITY_LABELS[detail_type], scope_label, "文档"]
     title_qualifier = scope_label
@@ -122,6 +131,13 @@ async def build_activity_detail_result(
             extra_prompt="请说明详情获取失败并建议稍后重试。",
         )
 
+    json_path = _first_existing_file(run_result.generated_files, ".json")
+    availability_contract = (
+        _activity_availability_contract(json_path)
+        if json_path
+        else {"partial": True, "availability": {}}
+    )
+
     artifact = _store_activity_artifact(
         artifact_store,
         kind="activity.detail",
@@ -135,6 +151,7 @@ async def build_activity_detail_result(
             "activity_type": detail_type,
             "difficulty": difficulty,
             "event_scope": event_scope,
+            **availability_contract,
         },
     )
     data = {
@@ -143,7 +160,7 @@ async def build_activity_detail_result(
         "difficulty": difficulty,
         "event_scope": event_scope,
         "generated_files": run_result.generated_files,
-        "json_path": _first_existing_file(run_result.generated_files, ".json"),
+        "json_path": json_path,
         "report": run_result.report,
         "stored_as_artifact": False,
     }
@@ -157,12 +174,16 @@ async def build_activity_detail_result(
             event_scope=event_scope,
         )
         data["json_path"] = str(artifact.file("data") or "")
+    data.update(availability_contract)
     return ok_result(
         module=module,
         command="get_activity_detail",
         data=data,
         message=f"{detail_type} 活动详情获取完成",
-        extra_prompt="请优先基于 report 回答，并提炼关键规则和时间信息。",
+        extra_prompt=(
+            "请优先基于 report 回答，并提炼关键规则和时间信息；data.partial=true "
+            "时必须依据 availability 说明陈旧缓存或上游状态。"
+        ),
     )
 
 
@@ -314,18 +335,21 @@ async def build_activity_brief_image_result(
             message="difficulty 仅支持 easy、medium、hard。",
             extra_prompt="请提示用户给出合法征程难度。",
         )
-    event_scope = str(arguments.get("event_scope", "current") or "current").strip().lower()
-    if event_scope not in {"current", "upcoming", "latest"}:
+    default_scope = "relevant" if activity_type == "all" else "current"
+    event_scope = str(
+        arguments.get("event_scope", default_scope) or default_scope
+    ).strip().lower()
+    if event_scope not in _EVENT_SCOPES:
         return fail_result(
             module=module,
             command="get_activity_brief_image",
             data={"activity_type": activity_type, "event_scope": event_scope},
-            message="event_scope 仅支持 current、upcoming、latest。",
+            message="event_scope 仅支持 current、upcoming、ended、relevant、latest。",
             extra_prompt="请提示用户给出合法活动范围。",
         )
 
     difficulty_label = {"easy": "简单", "medium": "中级", "hard": "困难"}[difficulty]
-    scope_label = {"current": "当前", "upcoming": "下一期", "latest": "最新发布"}[event_scope]
+    scope_label = _EVENT_SCOPE_LABELS[event_scope]
     title_qualifier = scope_label
     if activity_type == "odyssey":
         title_qualifier += difficulty_label
@@ -391,6 +415,7 @@ async def build_activity_brief_image_result(
             message="活动情报图缺少对应的结构化快照。",
             extra_prompt="请说明活动快照未生成完整，并建议稍后重试。",
         )
+    availability_contract = _activity_availability_contract(json_path)
 
     artifact = _store_activity_artifact(
         artifact_store,
@@ -405,6 +430,7 @@ async def build_activity_brief_image_result(
             "activity_type": activity_type,
             "difficulty": difficulty,
             "event_scope": event_scope,
+            **availability_contract,
         },
     )
     if artifact is not None:
@@ -431,13 +457,21 @@ async def build_activity_brief_image_result(
             "json_path": json_path,
             "stored_as_artifact": False,
         }
+    data.update(availability_contract)
+    partial = bool(availability_contract.get("partial", False))
     return image_result(
         module=module,
         command="get_activity_brief_image",
         image_path=image_path,
         data=data,
-        message=f"{scope_label}{_ACTIVITY_LABELS[activity_type]}情报图已生成",
-        extra_prompt="只写一句准确的图片说明。外层系统会发送图片，不要改写图中事实。",
+        message=(
+            f"{scope_label}{_ACTIVITY_LABELS[activity_type]}情报图已生成"
+            + ("（部分数据）" if partial else "")
+        ),
+        extra_prompt=(
+            "只写一句准确的图片说明；data.partial=true 时必须依据 availability "
+            "区分官方未发布、上游错误和陈旧缓存。外层系统会发送图片，不要改写图中事实。"
+        ),
     )
 
 
@@ -706,6 +740,38 @@ def _without_source_file_paths(report: str) -> str:
         if not line.strip().startswith(("# 文件:", "# JSON:", "# 图片:"))
     ]
     return "\n".join(lines).strip()
+
+
+def _activity_availability_contract(json_path: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {"partial": True, "availability": {}}
+    if not isinstance(payload, dict):
+        return {"partial": True, "availability": {}}
+
+    if str(payload.get("activity_type", "")) == "all":
+        raw_availability = payload.get("availability")
+        availability = raw_availability if isinstance(raw_availability, dict) else {}
+        return {
+            "partial": bool(payload.get("partial", False)),
+            "availability": availability,
+        }
+
+    activity_type = str(payload.get("activity_type", "") or "unknown")
+    state = str(payload.get("availability", "fresh") or "fresh")
+    return {
+        "partial": state != "fresh",
+        "availability": {
+            activity_type: {
+                "state": state,
+                "status": str(payload.get("status", "unknown")),
+                "event_id": str(payload.get("event_id", "")),
+                "source_checked_at": str(payload.get("source_checked_at", "")),
+                "stale_reason": str(payload.get("stale_reason", "")),
+            }
+        },
+    }
 
 
 def _activity_staging_dir(artifact_store: ArtifactStore | None) -> Path | None:

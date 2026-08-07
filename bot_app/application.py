@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from .agent import Agent
+from .artifact_store import ArtifactStore
 from .db_manager import BotDatabase
 from .harness.run_store import InMemoryRunStore
 from .harness.sessions import SessionLockManager
@@ -34,6 +35,7 @@ class BotApplication:
         agent: Agent,
         llm: LLMClient,
         database: BotDatabase | None = None,
+        artifact_store: ArtifactStore | None = None,
         sessions: SessionLockManager | None = None,
         runs: InMemoryRunStore | None = None,
     ) -> None:
@@ -43,6 +45,7 @@ class BotApplication:
         self._agent = agent
         self._llm = llm
         self._database = database
+        self.artifact_store = artifact_store
         self._sessions = sessions or SessionLockManager()
         self._runs = runs or InMemoryRunStore()
         self._volatile_group_enabled_settings: dict[str, bool] = {}

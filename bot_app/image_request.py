@@ -84,7 +84,9 @@ def activity_brief_selection_error(
         return "不支持该活动类型的确定性情报图。"
     if activity_type != requested_type:
         return "活动情报图类型与用户请求不一致。"
-    expected_scope = request.event_scope or "current"
+    expected_scope = request.event_scope or (
+        "relevant" if requested_type == "all" else "current"
+    )
     if event_scope != expected_scope:
         return "活动情报图范围与用户请求不一致。"
     if requested_type in {"all", "odyssey"}:
@@ -195,6 +197,10 @@ def _event_scope(text: str) -> str:
         return "upcoming"
     if any(term in text for term in ("当前", "本期", "current", "进行中")):
         return "current"
+    if any(term in text for term in ("已结束", "上一期", "最近结束", "ended")):
+        return "ended"
+    if any(term in text for term in ("相关活动", "自动选择", "relevant")):
+        return "relevant"
     if any(term in text for term in ("最新", "latest")):
         return "latest"
     return ""

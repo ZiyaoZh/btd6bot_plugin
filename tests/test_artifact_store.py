@@ -113,6 +113,44 @@ class ArtifactStoreTests(unittest.TestCase):
             self.assertEqual(count, 0)
             store.close()
 
+    def test_invalidate_active_archives_only_matching_activity_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = ArtifactStore(root / "artifacts")
+            records = {}
+            for activity_type in ("race", "boss"):
+                source = root / f"{activity_type}.md"
+                source.write_text(activity_type, encoding="utf-8")
+                records[activity_type] = store.register(
+                    kind="activity.brief",
+                    title=activity_type,
+                    tags=(activity_type,),
+                    files=[ArtifactSource(path=source, role="report")],
+                    metadata={"activity_type": activity_type},
+                )
+
+            invalidated = store.invalidate_active(
+                kinds=("activity.brief",),
+                metadata_matcher=lambda metadata: (
+                    metadata.get("activity_type") == "race"
+                ),
+            )
+
+            self.assertEqual(invalidated, 1)
+            self.assertEqual(
+                [item.metadata["activity_type"] for item in store.list_active()],
+                ["boss"],
+            )
+            self.assertTrue(
+                (
+                    store.archive_dir
+                    / "activity_brief"
+                    / records["race"].artifact_id
+                    / "report.md"
+                ).is_file()
+            )
+            store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

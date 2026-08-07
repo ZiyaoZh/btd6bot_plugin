@@ -24,7 +24,7 @@ class ImageGenerationPolicy:
                         arguments={
                             "activity_type": "all",
                             "difficulty": "hard",
-                            "event_scope": "current",
+                            "event_scope": "relevant",
                         },
                         source="policy",
                     )

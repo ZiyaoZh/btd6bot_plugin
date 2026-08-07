@@ -44,7 +44,10 @@ def build_activity_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
     ) -> CommandResultPayload:
         activity_type = str(arguments.get("activity_type", "") or "").strip().lower()
         difficulty = str(arguments.get("difficulty", "hard") or "hard").strip().lower()
-        event_scope = str(arguments.get("event_scope", "current") or "current").strip().lower()
+        default_scope = "relevant" if activity_type == "all" else "current"
+        event_scope = str(
+            arguments.get("event_scope", default_scope) or default_scope
+        ).strip().lower()
         scheduled_overview = (
             event.get("event_type") == "scheduled_daily_activity_brief"
             and activity_type == "all"
@@ -110,8 +113,8 @@ def build_activity_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
                         },
                         "event_scope": {
                             "type": "string",
-                            "enum": ["current", "upcoming", "latest"],
-                            "description": "事件范围，默认 latest，以保持旧详情行为。",
+                            "enum": ["current", "upcoming", "ended", "relevant", "latest"],
+                            "description": "生命周期范围。current/upcoming/ended 为精确状态，relevant 依次选择进行中、下一期、最近结束；latest 仅用于旧调用兼容。详情默认 latest。",
                         },
                     },
                     required=["activity_type"],
@@ -137,8 +140,8 @@ def build_activity_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
                         },
                         "event_scope": {
                             "type": "string",
-                            "enum": ["current", "upcoming", "latest"],
-                            "description": "current=当前，upcoming=下一期，latest=开始时间最新；默认 current。",
+                            "enum": ["current", "upcoming", "ended", "relevant", "latest"],
+                            "description": "current/upcoming/ended 为精确状态；relevant 依次选择进行中、下一期、最近结束；latest 仅兼容旧调用。all 总览默认 relevant，单项默认 current。",
                         },
                     },
                     required=["activity_type"],

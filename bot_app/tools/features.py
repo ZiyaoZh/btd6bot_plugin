@@ -62,7 +62,7 @@ _FEATURE_CATALOG: list[dict[str, Any]] = [
         "arguments": {
             "activity_type": "race|boss|odyssey|daily",
             "difficulty": "easy|medium|hard，征程默认 hard",
-            "event_scope": "current|upcoming|latest，默认 latest",
+            "event_scope": "current|upcoming|ended|relevant|latest，默认 latest",
         },
         "examples": ["获取竞速活动详情", "获取 boss 活动详情"],
     },
@@ -73,7 +73,7 @@ _FEATURE_CATALOG: list[dict[str, Any]] = [
         "arguments": {
             "activity_type": "all|race|boss|odyssey|daily，all 为总览",
             "difficulty": "easy|medium|hard，征程或总览默认 hard",
-            "event_scope": "current|upcoming|latest，默认 current",
+            "event_scope": "current|upcoming|ended|relevant|latest；总览默认 relevant，单项默认 current",
         },
         "examples": ["生成今天的全部活动总览图", "生成当前竞速情报图", "生成当前 Boss 情报图", "生成下一期困难征程图", "生成每日挑战图"],
     },
