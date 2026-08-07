@@ -28,6 +28,7 @@ def build_knowledge_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
             kb_root=dependencies.kb_root,
             arguments=arguments,
             module="tool.knowledge",
+            max_read_chars=dependencies.knowledge_max_read_chars,
         )
 
     return [
@@ -56,7 +57,10 @@ def build_knowledge_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
         ConcreteTool(
             spec={
                 "name": "read_game_knowledge_file",
-                "description": "读取 search_game_knowledge 返回的知识库文件内容。长文档需要提供 query 或 keywords 以提取相关文本块。",
+                "description": (
+                    "读取 search_game_knowledge 返回的知识库 Markdown 文件。"
+                    "提供 query 或 keywords 时优先提取相关章节；不提供时可读取整篇正文。"
+                ),
                 "parameters": object_schema(
                     {
                         "file_path": {
@@ -74,9 +78,12 @@ def build_knowledge_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
                         },
                         "max_chars": {
                             "type": "integer",
-                            "description": "最多读取或提取的字符数，默认 8000。",
+                            "description": (
+                                "最多读取或提取的字符数，默认使用服务端上限 "
+                                f"{dependencies.knowledge_max_read_chars}。"
+                            ),
                             "minimum": 500,
-                            "maximum": 20000,
+                            "maximum": dependencies.knowledge_max_read_chars,
                         },
                     },
                     required=["file_path"],

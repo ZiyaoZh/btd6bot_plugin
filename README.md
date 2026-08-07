@@ -132,7 +132,8 @@ daily_activity_brief:
 
 - `BOT_MAX_TOOL_ROUNDS`: 单个 Run 最多执行的工具批次，默认 4。
 - `BOT_TOOL_TIMEOUT_SECONDS`: 单个工具调用超时，默认 30 秒。
-- `BOT_MAX_TOOL_RESULT_CHARS`: 注入模型上下文的单个工具结果最大字符数，默认 60000。
+- `BOT_KNOWLEDGE_MAX_READ_CHARS`: 单次知识库文件读取或章节提取的最大字符数，默认 350000，可覆盖当前知识库中的完整长文档。查询带有问题或关键词时仍优先提取相关章节。
+- `BOT_MAX_TOOL_RESULT_CHARS`: 注入模型上下文的单个工具结果最大字符数，默认 400000。该值应不小于 `BOT_KNOWLEDGE_MAX_READ_CHARS`，否则知识正文仍可能在 Harness 层被二次截断。
 - `BOT_RUN_TIMEOUT_SECONDS`: 单个 Agent Run 总超时，默认 120 秒。
 
 ## 产物索引与生命周期

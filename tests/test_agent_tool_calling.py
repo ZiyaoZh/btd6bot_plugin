@@ -319,6 +319,8 @@ def _create_fake_knowledge_base(plugin_root: Path) -> Path:
         "野兽之主 Beast Handler 下路 0-0-4 数据。", encoding="utf-8"
     )
     (corpus_dir / "long.md").write_text("忍者猴\n" * 9000, encoding="utf-8")
+    rounds_content = "# 回合列表\n\n" + "| 100 | 红气球 | 测试回合数据 |\n" * 5000
+    (corpus_dir / "rounds.md").write_text(rounds_content, encoding="utf-8")
     (corpus_dir / "legacy.txt").write_text("旧知识库文本", encoding="utf-8")
     (kb_root / "kb_interface.py").write_text(
         "\n".join(
@@ -329,6 +331,23 @@ def _create_fake_knowledge_base(plugin_root: Path) -> Path:
                 "    if '野兽之主' in query or 'Beast Handler' in query:",
                 "        return [str(Path(corpus_dir) / 'beast.md')][:top_n]",
                 "    return [str(Path(corpus_dir) / 'monkey.md')][:top_n]",
+                "def interface_extract_paragraphs(file_name, keywords_query, corpus_dir, alias_file, max_chars, top_k=8):",
+                "    if Path(file_name).name != 'rounds.md':",
+                "        return {}",
+                "    text = Path(file_name).read_text(encoding='utf-8').strip()[:max_chars]",
+                "    return {",
+                "        'file': file_name,",
+                "        'text': text,",
+                "        'chars': len(text),",
+                "        'max_chars': max_chars,",
+                "        'paragraphs': [{",
+                "            'section': '回合列表',",
+                "            'level': 1,",
+                "            'content': text,",
+                "            'score': 100.0,",
+                "            'matched_terms': ['回合列表'],",
+                "        }],",
+                "    }",
                 "def interface_extract(file_name, keywords_query, corpus_dir, max_chars):",
                 "    return {",
                 "        'file': file_name,",
@@ -1313,6 +1332,28 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                 },
                 _event("读长文"),
             )
+            rounds_result = await ToolExecutor(registry).execute(
+                ToolInvocation(
+                    id="call_rounds",
+                    name="read_game_knowledge_file",
+                    arguments={"file_path": str(kb_root / "knowledge_docs/rounds.md")},
+                ),
+                _event("读取完整回合列表"),
+            )
+            queried_rounds_result = await ToolExecutor(
+                registry,
+                max_result_chars=_settings().max_tool_result_chars,
+            ).execute(
+                ToolInvocation(
+                    id="call_queried_rounds",
+                    name="read_game_knowledge_file",
+                    arguments={
+                        "file_path": str(kb_root / "knowledge_docs/rounds.md"),
+                        "query": "回合列表",
+                    },
+                ),
+                _event("查询回合列表"),
+            )
             rejected_result = await registry.execute(
                 "read_game_knowledge_file",
                 {"file_path": str(plugin_root / "outside.md")},
@@ -1341,6 +1382,32 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(long_result["ok"])
         self.assertEqual(long_result["data"]["mode"], "keyword_extract")
         self.assertGreater(long_result["data"]["content_chars"], 0)
+        self.assertTrue(rounds_result["ok"])
+        self.assertEqual(rounds_result["data"]["mode"], "full")
+        self.assertFalse(rounds_result["data"]["content_truncated"])
+        self.assertGreater(rounds_result["data"]["content_chars"], 60000)
+        self.assertEqual(
+            rounds_result["data"]["content_chars"],
+            rounds_result["data"]["source_content_chars"],
+        )
+        self.assertTrue(rounds_result["data"]["content"].startswith("# 回合列表"))
+        self.assertEqual(
+            rounds_result["data"]["content"].count("| 100 | 红气球 | 测试回合数据 |"),
+            5000,
+        )
+        self.assertNotIn("result_truncated", rounds_result["data"])
+        self.assertTrue(queried_rounds_result["ok"])
+        self.assertEqual(queried_rounds_result["data"]["mode"], "paragraph_extract")
+        self.assertGreater(queried_rounds_result["data"]["content_chars"], 60000)
+        self.assertEqual(
+            queried_rounds_result["data"]["content"].count(
+                "| 100 | 红气球 | 测试回合数据 |"
+            ),
+            5000,
+        )
+        self.assertEqual(len(queried_rounds_result["data"]["paragraphs"]), 1)
+        self.assertNotIn("content", queried_rounds_result["data"]["paragraphs"][0])
+        self.assertNotIn("result_truncated", queried_rounds_result["data"])
         self.assertFalse(rejected_result["ok"])
         self.assertFalse(rejected_legacy_result["ok"])
         self.assertEqual(rejected_legacy_result["message"], "文件类型不允许读取。")

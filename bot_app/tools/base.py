@@ -36,6 +36,7 @@ class ToolDependencies:
     image_gen_retry_delay_seconds: float = 2.0
     image_gen_use_proxy: bool = False
     image_gen_max_bytes: int = 20 * 1024 * 1024
+    knowledge_max_read_chars: int = 350_000
     artifact_store: ArtifactStore | None = None
     artifact_activity_ttl_seconds: float = 600.0
     artifact_image_ttl_seconds: float = 7 * 86_400.0
@@ -58,6 +59,7 @@ class ToolDependencies:
         image_gen_retry_delay_seconds: float = 2.0,
         image_gen_use_proxy: bool = False,
         image_gen_max_bytes: int = 20 * 1024 * 1024,
+        knowledge_max_read_chars: int = 350_000,
         artifact_store: ArtifactStore | None = None,
         artifact_root: str | Path = "data/artifacts",
         artifact_activity_ttl_seconds: float = 600.0,
@@ -95,6 +97,7 @@ class ToolDependencies:
             ),
             image_gen_use_proxy=bool(image_gen_use_proxy),
             image_gen_max_bytes=max(1024, int(image_gen_max_bytes)),
+            knowledge_max_read_chars=max(500, int(knowledge_max_read_chars)),
             artifact_store=resolved_artifact_store,
             artifact_activity_ttl_seconds=max(
                 1.0, float(artifact_activity_ttl_seconds)

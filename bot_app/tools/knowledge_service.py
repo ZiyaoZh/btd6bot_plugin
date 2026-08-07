@@ -135,6 +135,7 @@ def build_read_game_knowledge_file_result(
     kb_root: Path,
     arguments: dict[str, Any],
     module: str,
+    max_read_chars: int,
 ) -> CommandResultPayload:
     raw_path = str(arguments.get("file_path", "") or "").strip()
     raw_keywords_query = build_extract_keywords_query(arguments)
@@ -142,12 +143,13 @@ def build_read_game_knowledge_file_result(
         raw_keywords_query,
         kb_root=kb_root,
     )
-    max_chars_raw = arguments.get("max_chars", 8000)
+    read_limit = max(500, int(max_read_chars))
+    max_chars_raw = arguments.get("max_chars", read_limit)
     try:
         max_chars = int(max_chars_raw)
     except (TypeError, ValueError):
-        max_chars = 8000
-    max_chars = max(500, min(max_chars, 20000))
+        max_chars = read_limit
+    max_chars = max(500, min(max_chars, read_limit))
 
     if not raw_path:
         return fail_result(
@@ -221,6 +223,9 @@ def build_read_game_knowledge_file_result(
                 paragraph_metadata["paragraph_count"] = len(
                     paragraph_content.get("paragraphs", []) or []
                 )
+                paragraphs = summarize_extracted_paragraphs(
+                    paragraph_content.get("paragraphs", [])
+                )
                 return ok_result(
                     module=module,
                     command="read_game_knowledge_file",
@@ -232,7 +237,7 @@ def build_read_game_knowledge_file_result(
                         "keywords": split_keywords_for_view(
                             sanitize_kb_query(keywords_query)
                         ),
-                        "paragraphs": paragraph_content.get("paragraphs", []),
+                        "paragraphs": paragraphs,
                         "metadata": paragraph_metadata,
                         "content_chars": len(paragraph_text),
                     },
@@ -270,15 +275,8 @@ def build_read_game_knowledge_file_result(
                 ),
             )
 
-    if len(content) > 8000:
-        return _build_long_document_result(
-            kb_root=kb_root,
-            safe_path=safe_path,
-            keywords_query=keywords_query,
-            max_chars=max_chars,
-            module=module,
-        )
-
+    source_content_chars = len(content)
+    content_truncated = source_content_chars > max_chars
     content = content[:max_chars]
     return ok_result(
         module=module,
@@ -290,93 +288,36 @@ def build_read_game_knowledge_file_result(
             "mode": "full",
             "metadata": metadata,
             "content_chars": len(content),
+            "source_content_chars": source_content_chars,
+            "content_truncated": content_truncated,
         },
         message="知识库文件读取完成",
         extra_prompt=(
             "请优先依据 content 回答用户问题。"
-            "若内容不足，请再次从 matched_paths 选择其他文件读取，不要编造。"
+            "若 content_truncated=true，请带 query 或 keywords 重试以提取相关章节；"
+            "若内容仍不足，请从 matched_paths 选择其他文件读取，不要编造。"
         ),
     )
 
 
-def _build_long_document_result(
-    *,
-    kb_root: Path,
-    safe_path: Path,
-    keywords_query: str,
-    max_chars: int,
-    module: str,
-) -> CommandResultPayload:
-    if not keywords_query:
-        return fail_result(
-            module=module,
-            command="read_game_knowledge_file",
-            data={
-                "file_path": str(safe_path),
-                "content": "",
-                "mode": "extract",
-                "keywords": [],
-            },
-            message="文档过长，缺少关键词，无法执行文本块提取。",
-            extra_prompt=(
-                "该文档长度超过 8000 字符，不再返回整篇内容。"
-                "请补充 keywords（可用用户问题关键词）后重试 read_game_knowledge_file。"
-            ),
+def summarize_extracted_paragraphs(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    summaries: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content", "") or "")
+        summaries.append(
+            {
+                "section": str(item.get("section", "") or ""),
+                "level": item.get("level", 0),
+                "score": item.get("score", 0.0),
+                "matched_terms": item.get("matched_terms", []),
+                "content_chars": len(content),
+            }
         )
-
-    corpus_dir = _knowledge_corpus_dir(kb_root)
-    try:
-        kb_interface = _load_kb_interface(kb_root)
-        extract_result = kb_interface.interface_extract(
-            file_name=str(safe_path),
-            keywords_query=keywords_query,
-            corpus_dir=corpus_dir,
-            max_chars=max_chars,
-        )
-    except Exception as exc:
-        return fail_result(
-            module=module,
-            command="read_game_knowledge_file",
-            data={
-                "file_path": str(safe_path),
-                "content": "",
-                "mode": "extract",
-                "keywords": split_keywords_for_view(keywords_query),
-            },
-            message=f"关键词提取失败: {type(exc).__name__}",
-            extra_prompt="请更换关键词重试，或选择其他候选文件。",
-        )
-
-    extracted_text = str(extract_result.get("text", "") or "").strip()
-    metadata = build_kb_content_metadata(
-        extracted_text,
-        file_path=safe_path,
-        keywords_query=keywords_query,
-    )
-    return ok_result(
-        module=module,
-        command="read_game_knowledge_file",
-        data={
-            "file_path": str(extract_result.get("file", str(safe_path))),
-            "max_chars": int(extract_result.get("max_chars", max_chars) or max_chars),
-            "content": extracted_text,
-            "mode": "extract",
-            "keywords": extract_result.get(
-                "keywords", split_keywords_for_view(keywords_query)
-            ),
-            "metadata": metadata,
-            "chars": int(
-                extract_result.get("chars", len(extracted_text)) or len(extracted_text)
-            ),
-            "content_chars": len(extracted_text),
-        },
-        message="知识库长文已按关键词提取相关文本块",
-        extra_prompt=(
-            "这是从长文中提取的相关文本块。"
-            "请优先基于 content 回答。"
-            "若信息不足，更换更简单的关键词或换文件继续提取。"
-        ),
-    )
+    return summaries
 
 
 def extract_markdown_sections(

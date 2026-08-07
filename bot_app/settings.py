@@ -40,7 +40,8 @@ class AppSettings:
     context_compact_api_key: str = ""
     recent_group_window_size: int = 10
     tool_timeout_seconds: float = 30.0
-    max_tool_result_chars: int = 60000
+    knowledge_max_read_chars: int = 350000
+    max_tool_result_chars: int = 400000
     run_timeout_seconds: float = 120.0
     image_gen_api_base_url: str = ""
     image_gen_api_key: str = ""
@@ -172,7 +173,8 @@ def load_settings(env_path: str = ".env") -> AppSettings:
     context_compact_api_key = os.getenv("LLM_CONTEXT_COMPACT_API_KEY", "").strip()
     recent_group_window_size = int(os.getenv("BOT_RECENT_GROUP_WINDOW_SIZE", "10"))
     tool_timeout_seconds = float(os.getenv("BOT_TOOL_TIMEOUT_SECONDS", "30"))
-    max_tool_result_chars = int(os.getenv("BOT_MAX_TOOL_RESULT_CHARS", "60000"))
+    knowledge_max_read_chars = int(os.getenv("BOT_KNOWLEDGE_MAX_READ_CHARS", "350000"))
+    max_tool_result_chars = int(os.getenv("BOT_MAX_TOOL_RESULT_CHARS", "400000"))
     run_timeout_seconds = float(os.getenv("BOT_RUN_TIMEOUT_SECONDS", "120"))
     run_timeout_seconds = max(
         run_timeout_seconds,
@@ -264,6 +266,7 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         context_compact_api_key=context_compact_api_key,
         recent_group_window_size=max(1, min(recent_group_window_size, 20)),
         tool_timeout_seconds=max(0.1, tool_timeout_seconds),
+        knowledge_max_read_chars=max(500, knowledge_max_read_chars),
         max_tool_result_chars=max(1000, max_tool_result_chars),
         run_timeout_seconds=max(1.0, run_timeout_seconds),
         image_gen_api_base_url=image_gen_api_base_url,

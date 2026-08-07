@@ -42,6 +42,7 @@ def build_application(
         image_gen_retry_delay_seconds=settings.image_gen_retry_delay_seconds,
         image_gen_use_proxy=settings.image_gen_use_proxy,
         image_gen_max_bytes=settings.image_gen_max_bytes,
+        knowledge_max_read_chars=settings.knowledge_max_read_chars,
         artifact_root=settings.artifact_root,
         artifact_activity_ttl_seconds=settings.artifact_activity_ttl_seconds,
         artifact_image_ttl_seconds=settings.artifact_image_ttl_seconds,

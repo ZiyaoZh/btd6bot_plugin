@@ -20,7 +20,7 @@ class ToolExecutor:
         registry: ToolRegistry,
         *,
         timeout_seconds: float = 30.0,
-        max_result_chars: int = 60_000,
+        max_result_chars: int = 400_000,
     ) -> None:
         self._registry = registry
         self._timeout_seconds = max(0.1, float(timeout_seconds))
