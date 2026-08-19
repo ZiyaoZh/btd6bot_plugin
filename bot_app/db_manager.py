@@ -410,6 +410,31 @@ class BotDatabase:
             )
             self._conn.commit()
 
+    def update_message_media_summary(
+        self,
+        *,
+        group_id: str,
+        message_id: str,
+        segment_index: int,
+        visual_summary: str,
+    ) -> None:
+        summary = str(visual_summary or "").strip()
+        if not message_id or not summary:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE message_media
+                SET visual_summary = ?, updated_at = ?
+                WHERE message_row_id = (
+                    SELECT id FROM messages WHERE group_id = ? AND message_id = ?
+                ) AND segment_index = ?
+                """,
+                (summary, now, str(group_id), str(message_id), int(segment_index)),
+            )
+            self._conn.commit()
+
     def get_recent_group_messages(
         self, group_id: str, limit: int
     ) -> list[dict[str, Any]]:

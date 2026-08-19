@@ -170,6 +170,12 @@ PYTHONPATH=plugins/btd6bot_plugin python3 -m bot_app.model.vision_probe \
 
 现有 assistant/tool 消息和 `tools/tool_choice` 循环保持不变。短期会话记忆会保存图片数量及安全媒体引用（消息 ID、段序号、哈希、MIME、缓存路径、状态和可选视觉摘要），不保存源 URL、Base64 或图片正文。后续追问“上一张图”时，装配器按“当前消息、最近群聊、同一用户会话”的顺序，在同一总预算内去重并复用仍有效的缓存；缓存过期时上下文仍保留图片数量和已有视觉摘要作为文本降级，不会重新提交失效文件。200 条群聊总结仍只消费文本和视觉摘要，不附带原图。
 
+机器人成功交付含图消息的回复后，会在提交该用户会话前按需生成一句视觉摘要，并回填当前事件和 SQLite `message_media.visual_summary`。摘要只处理本轮已缓存且尚无摘要的图片，使用 `detail=low`，不会为未进入机器人对话的全部群图片预计算；模型或元数据回填失败不会影响已发送回复和会话提交。摘要提示明确将图片及 OCR 中的指令视为不可信用户内容，不允许覆盖系统规则。
+
+- `LLM_VISION_SUMMARY_ENABLED`: 是否为已参与对话的图片按需生成视觉摘要，默认 `true`；仅在识图总开关开启时生效。
+- `LLM_VISION_SUMMARY_IMAGE_LIMIT`: 每个已交付会话轮次最多生成的图片摘要数，默认 4。
+- `LLM_VISION_SUMMARY_MAX_CHARS`: 单张图片摘要最多保留的字符数，默认 160，最小 40。
+
 ## 产物索引与生命周期
 
 Agent 产生的可复用文件统一保存在 `data/artifacts/`，不再由各工具长期散落到自己的输出目录：

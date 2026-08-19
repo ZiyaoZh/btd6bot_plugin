@@ -67,6 +67,9 @@ class AppSettings:
     vision_current_image_limit: int = 4
     vision_history_image_limit: int = 2
     vision_total_image_limit: int = 4
+    vision_summary_enabled: bool = True
+    vision_summary_image_limit: int = 4
+    vision_summary_max_chars: int = 160
 
 
 def _read_prompt_from_file(path: Path) -> str:
@@ -273,6 +276,15 @@ def load_settings(env_path: str = ".env") -> AppSettings:
     vision_total_image_limit = max(
         0, int(os.getenv("LLM_VISION_TOTAL_IMAGE_LIMIT", "4"))
     )
+    vision_summary_enabled = os.getenv(
+        "LLM_VISION_SUMMARY_ENABLED", "true"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    vision_summary_image_limit = max(
+        0, int(os.getenv("LLM_VISION_SUMMARY_IMAGE_LIMIT", "4"))
+    )
+    vision_summary_max_chars = max(
+        40, int(os.getenv("LLM_VISION_SUMMARY_MAX_CHARS", "160"))
+    )
 
     if all((image_gen_api_base_url, image_gen_api_key, image_gen_model)):
         image_execution_timeout = calculate_image_gen_execution_timeout(
@@ -338,4 +350,7 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         vision_current_image_limit=vision_current_image_limit,
         vision_history_image_limit=vision_history_image_limit,
         vision_total_image_limit=vision_total_image_limit,
+        vision_summary_enabled=vision_summary_enabled,
+        vision_summary_image_limit=vision_summary_image_limit,
+        vision_summary_max_chars=vision_summary_max_chars,
     )

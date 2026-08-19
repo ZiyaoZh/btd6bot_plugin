@@ -15,6 +15,7 @@ from .receiver import GroupMessageReceiver
 from .sender import MessageSender
 from .settings import AppSettings
 from .tools import ToolDependencies
+from .visual_summary import VisualSummaryService
 
 
 def build_application(
@@ -43,6 +44,11 @@ def build_application(
     sender = MessageSender(bot)
     memory = GroupChatMemory(history_turns=settings.history_turns)
     llm = LLMClient(settings=settings)
+    visual_summaries = VisualSummaryService(
+        llm=llm,
+        settings=settings,
+        database=db,
+    )
     dependencies = ToolDependencies.create(
         db=db,
         plugin_root=plugin_root,
@@ -80,4 +86,5 @@ def build_application(
         llm=llm,
         database=db,
         artifact_store=dependencies.artifact_store,
+        visual_summaries=visual_summaries,
     )

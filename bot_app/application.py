@@ -21,6 +21,7 @@ from .receiver import (
 )
 from .sender import MessageSender
 from .settings import AppSettings
+from .visual_summary import VisualSummaryService
 
 MODEL_TURN_MESSAGES_SETTING = "model_turn_messages_enabled"
 BOT_ENABLED_SETTING = "bot_enabled"
@@ -41,6 +42,7 @@ class BotApplication:
         artifact_store: ArtifactStore | None = None,
         sessions: SessionLockManager | None = None,
         runs: InMemoryRunStore | None = None,
+        visual_summaries: VisualSummaryService | None = None,
     ) -> None:
         self.settings = settings
         self._receiver = receiver
@@ -51,6 +53,7 @@ class BotApplication:
         self.artifact_store = artifact_store
         self._sessions = sessions or SessionLockManager()
         self._runs = runs or InMemoryRunStore()
+        self._visual_summaries = visual_summaries
         self._volatile_group_enabled_settings: dict[str, bool] = {}
         self._volatile_model_turn_settings: dict[str, bool] = {}
         self._media_tasks: set[asyncio.Task[None]] = set()
@@ -262,6 +265,17 @@ class BotApplication:
                     log_flow(stage="sender.sent", trace_id=trace_id, reply=final_reply)
 
                 self._runs.transition(trace_id, "delivered")
+                if self._visual_summaries is not None:
+                    try:
+                        await self._visual_summaries.enrich_event(
+                            event, trace_id=trace_id
+                        )
+                    except Exception as exc:  # noqa: BLE001 - summary is best-effort
+                        log_flow(
+                            stage="vision.summary_failed",
+                            trace_id=trace_id,
+                            error_type=type(exc).__name__,
+                        )
                 await self._agent.commit_turn(event, response, trace_id=trace_id)
                 self._runs.transition(trace_id, "committed")
         except Exception as exc:
