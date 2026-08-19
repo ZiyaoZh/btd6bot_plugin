@@ -136,6 +136,17 @@ daily_activity_brief:
 - `BOT_MAX_TOOL_RESULT_CHARS`: 注入模型上下文的单个工具结果最大字符数，默认 400000。该值应不小于 `BOT_KNOWLEDGE_MAX_READ_CHARS`，否则知识正文仍可能在 Harness 层被二次截断。
 - `BOT_RUN_TIMEOUT_SECONDS`: 单个 Agent Run 总超时，默认 120 秒。
 
+## 识图兼容性探针
+
+生产识图开关启用前，先从仓库根目录对当前 OpenAI-compatible 代理运行三项门槛测试：Base64 单图、双图比较，以及图片与强制 `tools/tool_calls` 组合。探针读取 `.env` 中的 `LLM_API_KEY`、`LLM_API_BASE_URL` 和 `LLM_MODEL`/`LLM_MODELS`，不会接入 QQ 消息处理链路。
+
+```bash
+PYTHONPATH=plugins/btd6bot_plugin python3 -m bot_app.model.vision_probe \
+  --output plugins/btd6bot_plugin/data/vision-probe-report.json
+```
+
+默认使用仓库 `image_samples/` 中的两张非敏感图片。输出只包含文件路径、MIME、字节数、SHA-256、响应结构、usage、耗时和错误摘要，不包含 API key、Base64 图片或完整请求 payload。三项全部通过时退出码为 `0`；任一项失败时退出码为 `1`，此时不得开启生产识图链路。可用两个 `--image` 参数覆盖样本，用 `--timeout` 和 `--max-attempts` 控制单次超时及尝试次数。
+
 ## 产物索引与生命周期
 
 Agent 产生的可复用文件统一保存在 `data/artifacts/`，不再由各工具长期散落到自己的输出目录：
