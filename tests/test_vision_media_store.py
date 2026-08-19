@@ -205,9 +205,10 @@ class VisionMediaStoreTests(unittest.TestCase):
             with patch.dict(os.environ, {}, clear=True):
                 disabled = load_settings(str(env_file))
             env_file.write_text(
-                "BOT_TARGET_GROUP_ID=1000\nLLM_API_KEY=test\n"
+                "BOT_TARGET_GROUP_ID=1000\nBOT_TARGET_GROUP_IDS=1000,1001\n"
+                "LLM_API_KEY=test\n"
                 "LLM_VISION_ENABLED=true\nLLM_VISION_MAX_IMAGE_BYTES=2048\n"
-                "LLM_VISION_IMAGE_DETAIL=low\n",
+                "LLM_VISION_IMAGE_DETAIL=low\nLLM_VISION_GROUP_IDS=1001\n",
                 encoding="utf-8",
             )
             with patch.dict(os.environ, {}, clear=True):
@@ -217,6 +218,19 @@ class VisionMediaStoreTests(unittest.TestCase):
             self.assertTrue(enabled.vision_enabled)
             self.assertEqual(enabled.vision_max_image_bytes, 2048)
             self.assertEqual(enabled.vision_image_detail, "low")
+            self.assertFalse(enabled.is_vision_enabled_for_group("1000"))
+            self.assertTrue(enabled.is_vision_enabled_for_group("1001"))
+
+            env_file.write_text(
+                "BOT_TARGET_GROUP_ID=1000\nLLM_API_KEY=test\n"
+                "LLM_VISION_ENABLED=true\nLLM_VISION_GROUP_IDS=9999\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                self.assertRaisesRegex(ValueError, "LLM_VISION_GROUP_IDS"),
+            ):
+                load_settings(str(env_file))
 
             env_file.write_text(
                 "BOT_TARGET_GROUP_ID=1000\nLLM_API_KEY=test\n"

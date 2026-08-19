@@ -98,7 +98,7 @@ class BotApplication:
             )
 
         accepted = self._receiver.should_accept(msg)
-        if images and self.settings.vision_enabled:
+        if images and self.settings.is_vision_enabled_for_group(group_id):
             cache_call = self._cache_message_images(
                 msg,
                 images,

@@ -25,12 +25,19 @@ class VisualSummaryService:
     ) -> None:
         self._llm = llm
         self._database = database
+        self._settings = settings
         self._enabled = settings.vision_enabled and settings.vision_summary_enabled
         self._max_images = max(0, int(settings.vision_summary_image_limit))
         self._max_chars = max(40, int(settings.vision_summary_max_chars))
 
     async def enrich_event(self, event: EventPayload, *, trace_id: str = "") -> int:
-        if not self._enabled or self._max_images <= 0:
+        if (
+            not self._enabled
+            or not self._settings.is_vision_enabled_for_group(
+                str(event.get("group_id", ""))
+            )
+            or self._max_images <= 0
+        ):
             return 0
 
         generated = 0

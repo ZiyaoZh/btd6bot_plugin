@@ -49,6 +49,22 @@ class _FakeLLM:
 
 
 class VisualSummaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_skips_group_outside_vision_allowlist(self) -> None:
+        """VS-09: 灰度白名单外的群不生成视觉摘要。"""
+        llm = _FakeLLM()
+        service = VisualSummaryService(
+            llm=llm,  # type: ignore[arg-type]
+            settings=_settings(
+                target_group_ids=("1000", "1001"),
+                vision_group_ids=("1001",),
+            ),
+        )
+
+        count = await service.enrich_event(_event([]), trace_id="trace")
+
+        self.assertEqual(count, 0)
+        self.assertEqual(llm.calls, [])
+
     async def test_generates_summary_and_persists_metadata(self) -> None:
         """VS-05: 有效缓存生成短摘要，并同步事件引用和媒体元数据。"""
         with tempfile.TemporaryDirectory() as directory:

@@ -3,8 +3,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
-
 
 ACTIVITY_BRIEF_EXECUTION_TIMEOUT_SECONDS = 180.0
 ACTIVITY_BRIEF_RUN_TIMEOUT_MARGIN_SECONDS = 60.0
@@ -14,10 +12,10 @@ ACTIVITY_BRIEF_RUN_TIMEOUT_MARGIN_SECONDS = 60.0
 class AppSettings:
     env_file: str
     target_group_id: str
-    target_group_ids: Tuple[str, ...]
+    target_group_ids: tuple[str, ...]
     api_key: str
     api_base_url: str = "https://api.openai.com/v1"
-    models: Tuple[str, ...] = ("gpt-4o-mini",)
+    models: tuple[str, ...] = ("gpt-4o-mini",)
     system_prompt: str = "你是一个友好、简洁、乐于助人的群聊机器人。"
     router_tool_hints_prompt: str = ""
     request_timeout: int = 30
@@ -57,6 +55,7 @@ class AppSettings:
     artifact_default_ttl_seconds: float = 86_400.0
     artifact_archive_retention_seconds: float = 7 * 86_400.0
     vision_enabled: bool = False
+    vision_group_ids: tuple[str, ...] = ()
     vision_cache_root: str = "data/chat_media"
     vision_download_timeout_seconds: float = 10.0
     vision_max_image_bytes: int = 10 * 1024 * 1024
@@ -71,6 +70,12 @@ class AppSettings:
     vision_summary_enabled: bool = True
     vision_summary_image_limit: int = 4
     vision_summary_max_chars: int = 160
+
+    def is_vision_enabled_for_group(self, group_id: str) -> bool:
+        if not self.vision_enabled:
+            return False
+        allowed_group_ids = self.vision_group_ids or self.target_group_ids
+        return str(group_id) in allowed_group_ids
 
 
 def _read_prompt_from_file(path: Path) -> str:
@@ -96,12 +101,18 @@ def _load_env_file(path: Path) -> None:
         os.environ.setdefault(key, value)
 
 
-def _parse_models(raw: str) -> Tuple[str, ...]:
+def _parse_models(raw: str) -> tuple[str, ...]:
     items = [part.strip() for part in (raw or "").split(",") if part.strip()]
     if not items:
         return ("gpt-4o-mini",)
     # Keep order and remove duplicates.
     return tuple(dict.fromkeys(items))
+
+
+def _parse_group_ids(raw: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(part.strip() for part in (raw or "").split(",") if part.strip())
+    )
 
 
 def calculate_image_gen_execution_timeout(
@@ -271,6 +282,11 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         "yes",
         "on",
     }
+    vision_group_ids = _parse_group_ids(os.getenv("LLM_VISION_GROUP_IDS", ""))
+    unknown_vision_group_ids = set(vision_group_ids).difference(parsed_group_ids)
+    if unknown_vision_group_ids:
+        unknown = ", ".join(sorted(unknown_vision_group_ids))
+        raise ValueError(f"LLM_VISION_GROUP_IDS 包含非目标群: {unknown}")
     vision_cache_root = (
         os.getenv("LLM_VISION_CACHE_ROOT", "data/chat_media").strip()
         or "data/chat_media"
@@ -366,6 +382,7 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         artifact_default_ttl_seconds=artifact_default_ttl_seconds,
         artifact_archive_retention_seconds=artifact_archive_retention_seconds,
         vision_enabled=vision_enabled,
+        vision_group_ids=vision_group_ids,
         vision_cache_root=vision_cache_root,
         vision_download_timeout_seconds=vision_download_timeout_seconds,
         vision_max_image_bytes=vision_max_image_bytes,

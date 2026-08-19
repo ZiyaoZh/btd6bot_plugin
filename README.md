@@ -154,6 +154,7 @@ PYTHONPATH=plugins/btd6bot_plugin python3 -m bot_app.model.vision_probe \
 启用 `LLM_VISION_ENABLED` 后，接收层会将图片下载到独立的有界缓存。实际进入 Agent 的当前消息在处理前完成缓存；目标群内其他消息后台尽力缓存，下载失败只更新媒体状态，不中断群消息处理。缓存只接受公网 HTTP(S) 地址，逐跳检查重定向，限制下载字节数和解码像素数，并使用 Pillow 将首帧归一化为无 EXIF 的 JPEG/PNG。文件按归一化内容的 SHA-256 去重，SQLite 只保存 MIME、尺寸、哈希、缓存路径、状态和过期时间，不保存图片正文或 Base64。
 
 - `LLM_VISION_ENABLED`: 识图媒体链路总开关，默认 `false`。代理探针未通过时不得开启。
+- `LLM_VISION_GROUP_IDS`: 可选的逗号分隔灰度群白名单，必须是 `BOT_TARGET_GROUP_IDS` 的子集；留空时识图对所有目标群生效。
 - `LLM_VISION_CACHE_ROOT`: 图片缓存目录，默认 `data/chat_media`。
 - `LLM_VISION_DOWNLOAD_TIMEOUT_SECONDS`: 单图下载超时，默认 10 秒。
 - `LLM_VISION_MAX_IMAGE_BYTES`: 单张源图片最大字节数，默认 10 MiB。

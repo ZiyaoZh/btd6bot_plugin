@@ -19,7 +19,10 @@ def build_multimodal_user_content(
         {"task": "respond_to_event", "reply_context": reply_context},
         ensure_ascii=False,
     )
-    if not settings.vision_enabled or settings.vision_total_image_limit <= 0:
+    if (
+        not settings.is_vision_enabled_for_group(str(event.get("group_id", "")))
+        or settings.vision_total_image_limit <= 0
+    ):
         return text
 
     selected: list[tuple[str, dict[str, Any]]] = []

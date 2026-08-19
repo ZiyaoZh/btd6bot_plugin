@@ -64,6 +64,19 @@ class VisionMultimodalContextTests(unittest.TestCase):
         self.assertIsInstance(content, str)
         self.assertIn('"task": "respond_to_event"', content)
 
+    def test_group_allowlist_preserves_text_for_other_groups(self) -> None:
+        """VX-08: 灰度白名单外的目标群保持纯文本 payload。"""
+        content = build_multimodal_user_content(
+            event=_event([]),
+            reply_context={"current_event": {"text": "hello"}},
+            settings=_settings(
+                target_group_ids=("1000", "1001"),
+                vision_group_ids=("1001",),
+            ),
+        )
+
+        self.assertIsInstance(content, str)
+
     def test_current_and_history_images_follow_budget_and_labels(self) -> None:
         """VX-02: 当前与历史图片按预算进入有标签的多模态 content。"""
         with tempfile.TemporaryDirectory() as directory:
