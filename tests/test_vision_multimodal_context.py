@@ -5,7 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bot_app.llm_client import _redact_multimodal_payload
+from bot_app.llm_client import (
+    _multimodal_request_metrics,
+    _redact_multimodal_payload,
+)
+from bot_app.logging_utils import sanitize_log_value
 from bot_app.model.multimodal import build_multimodal_user_content
 from bot_app.protocol import EventPayload
 from bot_app.settings import AppSettings
@@ -132,6 +136,73 @@ class VisionMultimodalContextTests(unittest.TestCase):
         self.assertNotIn(encoded, serialized)
         self.assertIn("image/png bytes=13 sha256=", serialized)
         self.assertIn(encoded, str(payload))
+
+    def test_multimodal_request_reports_bounded_metrics_and_detail(self) -> None:
+        """VX-05: 图片请求记录数量、总字节和 detail，不记录正文。"""
+        first = base64.b64encode(b"first").decode("ascii")
+        second = base64.b64encode(b"second-image").decode("ascii")
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{first}",
+                                "detail": "low",
+                            },
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{second}",
+                                "detail": "high",
+                            },
+                        },
+                    ],
+                }
+            ]
+        }
+
+        metrics = _multimodal_request_metrics(payload)
+
+        self.assertEqual(metrics["vision_image_count"], 2)
+        self.assertEqual(metrics["vision_total_bytes"], 17)
+        self.assertEqual(metrics["vision_detail"], ["high", "low"])
+
+    def test_global_log_sanitizer_strips_embedded_images_and_signed_urls(self) -> None:
+        """VX-06: 任意日志字段不会泄露 Base64 或 URL 签名参数。"""
+        encoded = base64.b64encode(b"private-image").decode("ascii")
+        signed_url = "https://example.qq.com/image.png?appid=1&sig=secret#fragment"
+
+        sanitized = sanitize_log_value(
+            {
+                "detail": f"upstream echoed data:image/png;base64,{encoded}",
+                "nested": [{"url": signed_url}],
+            }
+        )
+        rendered = str(sanitized)
+
+        self.assertNotIn(encoded, rendered)
+        self.assertNotIn("secret", rendered)
+        self.assertNotIn("appid", rendered)
+        self.assertIn("image/png bytes=13 sha256=", rendered)
+        self.assertIn("https://example.qq.com/image.png", rendered)
+
+    def test_configured_detail_is_added_to_image_parts(self) -> None:
+        """VX-07: 模型适配层按配置发送视觉 detail。"""
+        with tempfile.TemporaryDirectory() as directory:
+            image = _image(Path(directory) / "detail.png", b"pixels")
+            content = build_multimodal_user_content(
+                event=_event([image]),
+                reply_context={},
+                settings=_settings(vision_image_detail="low"),
+            )
+
+        parts = content if isinstance(content, list) else []
+        image_parts = [part for part in parts if part.get("type") == "image_url"]
+        self.assertEqual(image_parts[0]["image_url"]["detail"], "low")
 
 
 if __name__ == "__main__":

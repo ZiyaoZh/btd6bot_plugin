@@ -115,7 +115,7 @@ class VisionMediaStoreTests(unittest.TestCase):
             )
 
             images = receiver.sync_message_to_db(message)
-            receiver.cache_message_images(message, images)
+            metrics = receiver.cache_message_images(message, images)
             rows = database.get_recent_group_messages("1000", 1)[0]["images"]
 
             self.assertEqual(
@@ -126,6 +126,10 @@ class VisionMediaStoreTests(unittest.TestCase):
             self.assertEqual(rows[0]["mime_type"], "image/jpeg")
             self.assertEqual((rows[0]["width"], rows[0]["height"]), (8, 6))
             self.assertEqual(len(list((root / "cache").rglob("*.jpg"))), 1)
+            self.assertEqual(metrics["cached"], 2)
+            self.assertEqual(metrics["rejected"], 0)
+            self.assertEqual(metrics["cache_hits"], 1)
+            self.assertGreater(metrics["total_bytes"], 0)
             database._conn.close()
 
     @patch("bot_app.media_store.socket.getaddrinfo")
@@ -202,7 +206,8 @@ class VisionMediaStoreTests(unittest.TestCase):
                 disabled = load_settings(str(env_file))
             env_file.write_text(
                 "BOT_TARGET_GROUP_ID=1000\nLLM_API_KEY=test\n"
-                "LLM_VISION_ENABLED=true\nLLM_VISION_MAX_IMAGE_BYTES=2048\n",
+                "LLM_VISION_ENABLED=true\nLLM_VISION_MAX_IMAGE_BYTES=2048\n"
+                "LLM_VISION_IMAGE_DETAIL=low\n",
                 encoding="utf-8",
             )
             with patch.dict(os.environ, {}, clear=True):
@@ -211,6 +216,18 @@ class VisionMediaStoreTests(unittest.TestCase):
             self.assertFalse(disabled.vision_enabled)
             self.assertTrue(enabled.vision_enabled)
             self.assertEqual(enabled.vision_max_image_bytes, 2048)
+            self.assertEqual(enabled.vision_image_detail, "low")
+
+            env_file.write_text(
+                "BOT_TARGET_GROUP_ID=1000\nLLM_API_KEY=test\n"
+                "LLM_VISION_IMAGE_DETAIL=maximum\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                self.assertRaisesRegex(ValueError, "LLM_VISION_IMAGE_DETAIL"),
+            ):
+                load_settings(str(env_file))
 
     def test_cache_failure_does_not_interrupt_message_processing(self) -> None:
         """VC-06: 缓存意外失败被降级，不阻断当前消息处理。"""

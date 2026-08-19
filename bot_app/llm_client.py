@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import json
 from dataclasses import dataclass
 from http.client import IncompleteRead, RemoteDisconnected
@@ -10,7 +9,7 @@ from threading import Lock
 from typing import Any
 from urllib import error, request
 
-from .logging_utils import log_flow
+from .logging_utils import log_flow, sanitize_log_value
 from .settings import AppSettings
 
 
@@ -202,6 +201,7 @@ class LLMClient:
             payload["response_format"] = response_format
 
         if trace_id:
+            vision_metrics = _multimodal_request_metrics(payload)
             log_flow(
                 stage="llm.request",
                 trace_id=trace_id,
@@ -209,6 +209,7 @@ class LLMClient:
                 model=model,
                 api_base_url=api_base_url,
                 payload=_redact_multimodal_payload(payload),
+                **vision_metrics,
             )
 
         body = json.dumps(payload).encode("utf-8")
@@ -376,22 +377,35 @@ def _is_retryable_http_status(status_code: int) -> bool:
 
 
 def _redact_multimodal_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    def redact(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {key: redact(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [redact(item) for item in value]
-        if not isinstance(value, str) or not value.startswith("data:image/"):
-            return value
-        header, separator, encoded = value.partition(",")
-        if not separator or ";base64" not in header:
-            return "[redacted image data URL]"
-        try:
-            binary = base64.b64decode(encoded, validate=True)
-        except (ValueError, TypeError):
-            return "[redacted invalid image data URL]"
-        mime_type = header[5:].split(";", 1)[0]
-        digest = hashlib.sha256(binary).hexdigest()
-        return f"[redacted {mime_type} bytes={len(binary)} sha256={digest}]"
+    sanitized = sanitize_log_value(payload)
+    return sanitized if isinstance(sanitized, dict) else {}
 
-    return redact(payload)
+
+def _multimodal_request_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    image_count = 0
+    total_bytes = 0
+    details: set[str] = set()
+    messages = payload.get("messages", [])
+    for message in messages if isinstance(messages, list) else []:
+        content = message.get("content", []) if isinstance(message, dict) else []
+        for part in content if isinstance(content, list) else []:
+            if not isinstance(part, dict) or part.get("type") != "image_url":
+                continue
+            image = part.get("image_url", {})
+            if not isinstance(image, dict):
+                continue
+            image_count += 1
+            detail = str(image.get("detail", "auto") or "auto")
+            details.add(detail)
+            url = str(image.get("url", "") or "")
+            header, separator, encoded = url.partition(",")
+            if separator and header.startswith("data:image/") and ";base64" in header:
+                try:
+                    total_bytes += len(base64.b64decode(encoded, validate=True))
+                except (ValueError, TypeError):
+                    pass
+    return {
+        "vision_image_count": image_count,
+        "vision_total_bytes": total_bytes,
+        "vision_detail": sorted(details),
+    }

@@ -167,10 +167,13 @@ PYTHONPATH=plugins/btd6bot_plugin python3 -m bot_app.model.vision_probe \
 - `LLM_VISION_CURRENT_IMAGE_LIMIT`: 当前消息最多提交的图片数，默认 4。
 - `LLM_VISION_HISTORY_IMAGE_LIMIT`: 最近群聊最多提交的图片数，默认 2。
 - `LLM_VISION_TOTAL_IMAGE_LIMIT`: 单次模型请求最多提交的图片总数，默认 4。
+- `LLM_VISION_IMAGE_DETAIL`: Chat Completions 图片细节级别，可选 `auto`、`low`、`high`，默认 `auto`。非法值会在启动时拒绝，`high` 通常消耗更多图片 token。
+
+识图日志执行统一的出站脱敏：任何结构化字段中的 Base64 图片都会替换为 MIME、字节数和 SHA-256，HTTP(S) URL 的查询参数与 fragment 会被移除，因此上游错误回显和异常堆栈也不会保留 QQ 签名参数。`llm.request` 额外记录 `vision_image_count`、`vision_total_bytes` 和 `vision_detail`；`media.cache_completed` 记录图片总数、缓存成功/拒绝数、内容命中数、归一化总字节和 `duration_ms`。这些字段用于灰度观察，不包含图片正文或完整源 URL。
 
 现有 assistant/tool 消息和 `tools/tool_choice` 循环保持不变。短期会话记忆会保存图片数量及安全媒体引用（消息 ID、段序号、哈希、MIME、缓存路径、状态和可选视觉摘要），不保存源 URL、Base64 或图片正文。后续追问“上一张图”时，装配器按“当前消息、最近群聊、同一用户会话”的顺序，在同一总预算内去重并复用仍有效的缓存；缓存过期时上下文仍保留图片数量和已有视觉摘要作为文本降级，不会重新提交失效文件。200 条群聊总结仍只消费文本和视觉摘要，不附带原图。
 
-机器人成功交付含图消息的回复后，会在提交该用户会话前按需生成一句视觉摘要，并回填当前事件和 SQLite `message_media.visual_summary`。摘要只处理本轮已缓存且尚无摘要的图片，使用 `detail=low`，不会为未进入机器人对话的全部群图片预计算；模型或元数据回填失败不会影响已发送回复和会话提交。摘要提示明确将图片及 OCR 中的指令视为不可信用户内容，不允许覆盖系统规则。
+机器人成功交付含图消息的回复后，会在提交该用户会话前按需生成一句视觉摘要，并回填当前事件和 SQLite `message_media.visual_summary`。摘要只处理本轮已缓存且尚无摘要的图片，使用 `detail=low`，不会为未进入机器人对话的全部群图片预计算；模型或元数据回填失败不会影响已发送回复和会话提交。系统提示和摘要提示都明确将图片像素、OCR、截图文字及图片元数据视为不可信用户内容，不允许其中的指令覆盖系统规则或工具策略。
 
 - `LLM_VISION_SUMMARY_ENABLED`: 是否为已参与对话的图片按需生成视觉摘要，默认 `true`；仅在识图总开关开启时生效。
 - `LLM_VISION_SUMMARY_IMAGE_LIMIT`: 每个已交付会话轮次最多生成的图片摘要数，默认 4。

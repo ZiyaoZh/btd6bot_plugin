@@ -115,11 +115,15 @@ class GroupMessageReceiver:
 
     def cache_message_images(
         self, msg: GroupMessageEvent, images: list[ImagePayload]
-    ) -> None:
+    ) -> dict[str, int]:
         if self._media_store is None or self._db is None:
-            return
+            return {"cached": 0, "rejected": 0, "cache_hits": 0, "total_bytes": 0}
+        metrics = {"cached": 0, "rejected": 0, "cache_hits": 0, "total_bytes": 0}
         for image in images:
             result = self._media_store.cache(image)
+            metrics["cached" if result.status == "cached" else "rejected"] += 1
+            metrics["cache_hits"] += int(result.cache_hit)
+            metrics["total_bytes"] += int(result.normalized_bytes)
             image.update(
                 {
                     "processing_status": result.status,
@@ -134,6 +138,7 @@ class GroupMessageReceiver:
                 message_id=str(getattr(msg, "message_id", "") or ""),
                 result=result,
             )
+        return metrics
 
     def normalize_text(self, raw_text: str) -> str:
         text = (raw_text or "").strip()

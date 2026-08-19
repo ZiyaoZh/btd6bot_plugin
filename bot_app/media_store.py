@@ -33,6 +33,8 @@ class CachedImage:
     cache_path: str = ""
     expires_at: str = ""
     error: str = ""
+    cache_hit: bool = False
+    normalized_bytes: int = 0
 
 
 class ChatMediaStore:
@@ -77,7 +79,8 @@ class ChatMediaStore:
             digest = hashlib.sha256(normalized).hexdigest()
             target = self.root / digest[:2] / f"{digest}{suffix}"
             target.parent.mkdir(parents=True, exist_ok=True)
-            if not target.exists():
+            cache_hit = target.exists()
+            if not cache_hit:
                 self._atomic_write(target, normalized)
             os.utime(target, None)
             expires_at = datetime.now(timezone.utc) + timedelta(
@@ -94,6 +97,8 @@ class ChatMediaStore:
                 sha256=digest,
                 cache_path=str(target.resolve()),
                 expires_at=expires_at.isoformat(),
+                cache_hit=cache_hit,
+                normalized_bytes=len(normalized),
             )
         except MediaStoreError as exc:
             return CachedImage(segment_index, "rejected", error=str(exc))

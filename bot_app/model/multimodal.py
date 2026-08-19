@@ -92,7 +92,10 @@ def build_multimodal_user_content(
                 {"type": "text", "text": f"\n[{label}]"},
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{encoded}",
+                        "detail": settings.vision_image_detail,
+                    },
                 },
             ]
         )

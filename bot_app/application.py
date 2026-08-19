@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import traceback
 from typing import Any
 from uuid import uuid4
@@ -177,7 +178,19 @@ class BotApplication:
         trace_id: str,
     ) -> None:
         try:
-            await asyncio.to_thread(self._receiver.cache_message_images, msg, images)
+            started_at = time.monotonic()
+            metrics = await asyncio.to_thread(
+                self._receiver.cache_message_images, msg, images
+            )
+            log_flow(
+                stage="media.cache_completed",
+                trace_id=trace_id,
+                group_id=str(msg.group_id),
+                message_id=str(getattr(msg, "message_id", "") or ""),
+                image_count=len(images),
+                duration_ms=round((time.monotonic() - started_at) * 1000, 2),
+                **metrics,
+            )
         except Exception as exc:
             log_flow(
                 stage="media.cache_failed",

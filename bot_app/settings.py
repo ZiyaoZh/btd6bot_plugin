@@ -67,6 +67,7 @@ class AppSettings:
     vision_current_image_limit: int = 4
     vision_history_image_limit: int = 2
     vision_total_image_limit: int = 4
+    vision_image_detail: str = "auto"
     vision_summary_enabled: bool = True
     vision_summary_image_limit: int = 4
     vision_summary_max_chars: int = 160
@@ -124,7 +125,9 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         raise ValueError("缺少环境变量 BOT_TARGET_GROUP_ID")
 
     target_group_ids_raw = os.getenv("BOT_TARGET_GROUP_IDS", "").strip()
-    parsed_group_ids = [gid.strip() for gid in target_group_ids_raw.split(",") if gid.strip()]
+    parsed_group_ids = [
+        gid.strip() for gid in target_group_ids_raw.split(",") if gid.strip()
+    ]
     if not parsed_group_ids:
         parsed_group_ids = [target_group_id]
 
@@ -135,13 +138,17 @@ def load_settings(env_path: str = ".env") -> AppSettings:
     if not api_key:
         raise ValueError("缺少环境变量 LLM_API_KEY")
 
-    api_base_url = os.getenv("LLM_API_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+    api_base_url = (
+        os.getenv("LLM_API_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+    )
     models_raw = os.getenv("LLM_MODELS", "").strip()
     if not models_raw:
         # Backward compatible: old single-model env var can also be comma-separated.
         models_raw = os.getenv("LLM_MODEL", "gpt-4o-mini").strip()
     models = _parse_models(models_raw)
-    prompt_file_raw = os.getenv("LLM_SYSTEM_PROMPT_FILE", os.getenv("SYSTEM_PROMPT_FILE", "")).strip()
+    prompt_file_raw = os.getenv(
+        "LLM_SYSTEM_PROMPT_FILE", os.getenv("SYSTEM_PROMPT_FILE", "")
+    ).strip()
     if prompt_file_raw:
         prompt_path = Path(prompt_file_raw)
         if not prompt_path.is_absolute():
@@ -153,14 +160,18 @@ def load_settings(env_path: str = ".env") -> AppSettings:
             os.getenv("SYSTEM_PROMPT", "你是一个友好、简洁、乐于助人的群聊机器人。"),
         ).strip()
 
-    router_hints_file_raw = os.getenv("LLM_ROUTER_TOOL_HINTS_FILE", "prompts/router_tool_hints.md").strip()
+    router_hints_file_raw = os.getenv(
+        "LLM_ROUTER_TOOL_HINTS_FILE", "prompts/router_tool_hints.md"
+    ).strip()
     router_tool_hints_prompt = ""
     if router_hints_file_raw:
         router_hints_path = Path(router_hints_file_raw)
         if not router_hints_path.is_absolute():
             router_hints_path = base_dir / router_hints_path
         if router_hints_path.exists():
-            router_tool_hints_prompt = router_hints_path.read_text(encoding="utf-8").strip()
+            router_tool_hints_prompt = router_hints_path.read_text(
+                encoding="utf-8"
+            ).strip()
 
     request_timeout = int(os.getenv("LLM_REQUEST_TIMEOUT", "30"))
     llm_max_retries = int(os.getenv("LLM_MAX_RETRIES", "20"))
@@ -169,21 +180,34 @@ def load_settings(env_path: str = ".env") -> AppSettings:
     trigger_prefix = os.getenv("BOT_TRIGGER_PREFIX", "").strip()
     bot_qq = os.getenv("BOT_QQ", "").strip()
     bot_name = os.getenv("BOT_NAME", "机器人").strip() or "机器人"
-    manual_file = os.getenv("BOT_MANUAL_FILE", "manuals/program_manual.md").strip() or "manuals/program_manual.md"
+    manual_file = (
+        os.getenv("BOT_MANUAL_FILE", "manuals/program_manual.md").strip()
+        or "manuals/program_manual.md"
+    )
     max_tool_rounds = int(os.getenv("BOT_MAX_TOOL_ROUNDS", "4"))
-    proactive_chat_enabled = os.getenv("BOT_PROACTIVE_CHAT_ENABLED", "true").strip().lower() in {
+    proactive_chat_enabled = os.getenv(
+        "BOT_PROACTIVE_CHAT_ENABLED", "true"
+    ).strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
     db_file = os.getenv("BOT_DB_FILE", "data/bot_data.db").strip() or "data/bot_data.db"
-    flow_log_file = os.getenv("BOT_FLOW_LOG_FILE", "logs/network.log").strip() or "logs/network.log"
+    flow_log_file = (
+        os.getenv("BOT_FLOW_LOG_FILE", "logs/network.log").strip() or "logs/network.log"
+    )
     context_compact_max_chars = int(os.getenv("LLM_CONTEXT_COMPACT_MAX_CHARS", "12000"))
-    context_compact_keep_recent_turns = int(os.getenv("LLM_CONTEXT_COMPACT_KEEP_RECENT_TURNS", "10"))
-    context_compact_summary_max_chars = int(os.getenv("LLM_CONTEXT_COMPACT_SUMMARY_MAX_CHARS", "360"))
+    context_compact_keep_recent_turns = int(
+        os.getenv("LLM_CONTEXT_COMPACT_KEEP_RECENT_TURNS", "10")
+    )
+    context_compact_summary_max_chars = int(
+        os.getenv("LLM_CONTEXT_COMPACT_SUMMARY_MAX_CHARS", "360")
+    )
     context_compact_model = os.getenv("LLM_CONTEXT_COMPACT_MODEL", "").strip()
-    context_compact_api_base_url = os.getenv("LLM_CONTEXT_COMPACT_API_BASE_URL", "").strip()
+    context_compact_api_base_url = os.getenv(
+        "LLM_CONTEXT_COMPACT_API_BASE_URL", ""
+    ).strip()
     context_compact_api_key = os.getenv("LLM_CONTEXT_COMPACT_API_KEY", "").strip()
     recent_group_window_size = int(os.getenv("BOT_RECENT_GROUP_WINDOW_SIZE", "10"))
     tool_timeout_seconds = float(os.getenv("BOT_TOOL_TIMEOUT_SECONDS", "30"))
@@ -218,8 +242,7 @@ def load_settings(env_path: str = ".env") -> AppSettings:
     }
     image_gen_max_bytes = int(os.getenv("IMAGE_GEN_MAX_BYTES", str(20 * 1024 * 1024)))
     artifact_root = (
-        os.getenv("BOT_ARTIFACT_ROOT", "data/artifacts").strip()
-        or "data/artifacts"
+        os.getenv("BOT_ARTIFACT_ROOT", "data/artifacts").strip() or "data/artifacts"
     )
     artifact_activity_ttl_seconds = max(
         1.0,
@@ -276,6 +299,9 @@ def load_settings(env_path: str = ".env") -> AppSettings:
     vision_total_image_limit = max(
         0, int(os.getenv("LLM_VISION_TOTAL_IMAGE_LIMIT", "4"))
     )
+    vision_image_detail = os.getenv("LLM_VISION_IMAGE_DETAIL", "auto").strip().lower()
+    if vision_image_detail not in {"auto", "low", "high"}:
+        raise ValueError("LLM_VISION_IMAGE_DETAIL 必须是 auto、low 或 high")
     vision_summary_enabled = os.getenv(
         "LLM_VISION_SUMMARY_ENABLED", "true"
     ).strip().lower() in {"1", "true", "yes", "on"}
@@ -350,6 +376,7 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         vision_current_image_limit=vision_current_image_limit,
         vision_history_image_limit=vision_history_image_limit,
         vision_total_image_limit=vision_total_image_limit,
+        vision_image_detail=vision_image_detail,
         vision_summary_enabled=vision_summary_enabled,
         vision_summary_image_limit=vision_summary_image_limit,
         vision_summary_max_chars=vision_summary_max_chars,
