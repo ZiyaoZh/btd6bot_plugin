@@ -10,6 +10,13 @@ class ImagePayload(TypedDict, total=False):
     file_name: str
     file_size: int
     sub_type: int
+    mime_type: str
+    width: int
+    height: int
+    sha256: str
+    cache_path: str
+    processing_status: str
+    expires_at: str
 
 
 class _EventPayloadRequired(TypedDict):

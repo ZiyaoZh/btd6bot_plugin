@@ -53,6 +53,7 @@ class BotApplication:
         self._runs = runs or InMemoryRunStore()
         self._volatile_group_enabled_settings: dict[str, bool] = {}
         self._volatile_model_turn_settings: dict[str, bool] = {}
+        self._media_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def enabled(self) -> bool:
@@ -82,8 +83,9 @@ class BotApplication:
             user_id=user_id,
         )
 
+        images = []
         if self._receiver.should_track_message(msg):
-            self._receiver.sync_message_to_db(msg)
+            images = self._receiver.sync_message_to_db(msg)
             log_flow(
                 stage="db.synced",
                 trace_id=trace_id,
@@ -91,7 +93,21 @@ class BotApplication:
                 user_id=user_id,
             )
 
-        if not self._receiver.should_accept(msg):
+        accepted = self._receiver.should_accept(msg)
+        if images and self.settings.vision_enabled:
+            cache_call = self._cache_message_images(
+                msg,
+                images,
+                trace_id=trace_id,
+            )
+            if accepted:
+                await cache_call
+            else:
+                task = asyncio.create_task(cache_call)
+                self._media_tasks.add(task)
+                task.add_done_callback(self._media_tasks.discard)
+
+        if not accepted:
             log_flow(
                 stage="receiver.rejected", trace_id=trace_id, reason="message filtered"
             )
@@ -147,6 +163,25 @@ class BotApplication:
             at_user_id=user_id,
             send_failure_notice=True,
         )
+
+    async def _cache_message_images(
+        self,
+        msg: Any,
+        images: list[Any],
+        *,
+        trace_id: str,
+    ) -> None:
+        try:
+            await asyncio.to_thread(self._receiver.cache_message_images, msg, images)
+        except Exception as exc:
+            log_flow(
+                stage="media.cache_failed",
+                trace_id=trace_id,
+                group_id=str(msg.group_id),
+                message_id=str(getattr(msg, "message_id", "") or ""),
+                image_count=len(images),
+                error_type=type(exc).__name__,
+            )
 
     async def process_event(
         self,

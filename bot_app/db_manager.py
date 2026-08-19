@@ -12,6 +12,7 @@ from .group_context import (
     build_message_record_metadata,
     serialize_message_record_metadata,
 )
+from .media_store import CachedImage
 from .protocol import ImagePayload
 
 
@@ -370,6 +371,44 @@ class BotDatabase:
                 }
             )
         return result
+
+    def update_message_media_cache(
+        self,
+        *,
+        group_id: str,
+        message_id: str,
+        result: CachedImage,
+    ) -> None:
+        if not message_id:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE message_media
+                SET mime_type = ?, source_bytes = COALESCE(?, source_bytes),
+                    width = ?, height = ?, sha256 = ?, cache_path = ?,
+                    processing_status = ?, expires_at = ?, updated_at = ?
+                WHERE message_row_id = (
+                    SELECT id FROM messages WHERE group_id = ? AND message_id = ?
+                ) AND segment_index = ?
+                """,
+                (
+                    result.mime_type,
+                    result.source_bytes,
+                    result.width,
+                    result.height,
+                    result.sha256,
+                    result.cache_path,
+                    result.status,
+                    result.expires_at,
+                    now,
+                    str(group_id),
+                    str(message_id),
+                    result.segment_index,
+                ),
+            )
+            self._conn.commit()
 
     def get_recent_group_messages(
         self, group_id: str, limit: int

@@ -149,7 +149,20 @@ PYTHONPATH=plugins/btd6bot_plugin python3 -m bot_app.model.vision_probe \
 
 代理门槛通过后，QQ 接收层会从 NcatBot `MessageArray.to_list()` 提取结构化图片元数据，并在渠道事件契约中提供 `message_id` 和 `images`。每张图片包含原消息段位置，以及可用的 URL、文件 ID、文件名、字节数和 `sub_type`；接收层不下载图片、不保存 Base64，也不通过正则解析 CQ 图片码。
 
-图片元数据与消息在同一 SQLite 事务内写入 `message_media`，以消息行和原始段位置保证幂等。纯图片会进入消息处理和最近群聊窗口，历史上下文以“该消息含 N 张图片”占位，并携带不含源 URL 的媒体状态引用；当前消息会按 `message_id` 从历史窗口去重。此阶段仍不下载或缓存图片，也不构造多模态模型请求，因此模型尚不能读取真实像素。
+图片元数据与消息在同一 SQLite 事务内写入 `message_media`，以消息行和原始段位置保证幂等。纯图片会进入消息处理和最近群聊窗口，历史上下文以“该消息含 N 张图片”占位，并携带不含源 URL 的媒体状态引用；当前消息会按 `message_id` 从历史窗口去重。
+
+启用 `LLM_VISION_ENABLED` 后，接收层会将图片下载到独立的有界缓存。实际进入 Agent 的当前消息在处理前完成缓存；目标群内其他消息后台尽力缓存，下载失败只更新媒体状态，不中断群消息处理。缓存只接受公网 HTTP(S) 地址，逐跳检查重定向，限制下载字节数和解码像素数，并使用 Pillow 将首帧归一化为无 EXIF 的 JPEG/PNG。文件按归一化内容的 SHA-256 去重，SQLite 只保存 MIME、尺寸、哈希、缓存路径、状态和过期时间，不保存图片正文或 Base64。
+
+- `LLM_VISION_ENABLED`: 识图媒体链路总开关，默认 `false`。代理探针未通过时不得开启。
+- `LLM_VISION_CACHE_ROOT`: 图片缓存目录，默认 `data/chat_media`。
+- `LLM_VISION_DOWNLOAD_TIMEOUT_SECONDS`: 单图下载超时，默认 10 秒。
+- `LLM_VISION_MAX_IMAGE_BYTES`: 单张源图片最大字节数，默认 10 MiB。
+- `LLM_VISION_MAX_PIXELS`: 单张图片最大解码像素数，默认 20,000,000。
+- `LLM_VISION_MAX_DIMENSION`: 归一化图片最长边，默认 2048 像素。
+- `LLM_VISION_CACHE_TTL_SECONDS`: 缓存有效期，默认 21,600 秒（6 小时）。
+- `LLM_VISION_CACHE_CAPACITY_BYTES`: 缓存磁盘上限，默认 512 MiB；超限时优先删除最久未使用的文件。
+
+当前阶段只建立安全缓存并回写 `message_media`，尚未向 Chat Completions 提交 `image_url`，所以即使开启开关，模型仍不会读取像素。多模态上下文装配将在下一阶段接入。
 
 ## 产物索引与生命周期
 

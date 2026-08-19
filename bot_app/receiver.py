@@ -7,6 +7,7 @@ from typing import Any
 from ncatbot.event.qq import GroupMessageEvent
 
 from .db_manager import BotDatabase
+from .media_store import ChatMediaStore
 from .protocol import AdminControlPayload, EventPayload, ImagePayload
 from .settings import AppSettings
 
@@ -14,9 +15,15 @@ PROACTIVE_CHAT_ENABLED_SETTING = "proactive_chat_enabled"
 
 
 class GroupMessageReceiver:
-    def __init__(self, settings: AppSettings, db: BotDatabase | None = None) -> None:
+    def __init__(
+        self,
+        settings: AppSettings,
+        db: BotDatabase | None = None,
+        media_store: ChatMediaStore | None = None,
+    ) -> None:
         self._settings = settings
         self._db = db
+        self._media_store = media_store
         self._volatile_proactive_chat_settings: dict[str, bool] = {}
 
     def set_proactive_chat_enabled(self, group_id: str, enabled: bool) -> None:
@@ -94,15 +101,30 @@ class GroupMessageReceiver:
             "reason": "authorized",
         }
 
-    def sync_message_to_db(self, msg: GroupMessageEvent) -> None:
+    def sync_message_to_db(self, msg: GroupMessageEvent) -> list[ImagePayload]:
+        images = extract_image_payloads(getattr(msg, "message", None))
         if self._db is None:
-            return
+            return images
         self._db.record_group_message(
             msg,
             bot_qq=self._settings.bot_qq,
             bot_name=self._settings.bot_name,
-            images=extract_image_payloads(getattr(msg, "message", None)),
+            images=images,
         )
+        return images
+
+    def cache_message_images(
+        self, msg: GroupMessageEvent, images: list[ImagePayload]
+    ) -> None:
+        if self._media_store is None or self._db is None:
+            return
+        for image in images:
+            result = self._media_store.cache(image)
+            self._db.update_message_media_cache(
+                group_id=str(msg.group_id),
+                message_id=str(getattr(msg, "message_id", "") or ""),
+                result=result,
+            )
 
     def normalize_text(self, raw_text: str) -> str:
         text = (raw_text or "").strip()

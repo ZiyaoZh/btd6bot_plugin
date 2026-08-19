@@ -56,6 +56,14 @@ class AppSettings:
     artifact_image_ttl_seconds: float = 7 * 86_400.0
     artifact_default_ttl_seconds: float = 86_400.0
     artifact_archive_retention_seconds: float = 7 * 86_400.0
+    vision_enabled: bool = False
+    vision_cache_root: str = "data/chat_media"
+    vision_download_timeout_seconds: float = 10.0
+    vision_max_image_bytes: int = 10 * 1024 * 1024
+    vision_max_pixels: int = 20_000_000
+    vision_max_dimension: int = 2048
+    vision_cache_ttl_seconds: float = 6 * 3600.0
+    vision_cache_capacity_bytes: int = 512 * 1024 * 1024
 
 
 def _read_prompt_from_file(path: Path) -> str:
@@ -228,6 +236,31 @@ def load_settings(env_path: str = ".env") -> AppSettings:
             )
         ),
     )
+    vision_enabled = os.getenv("LLM_VISION_ENABLED", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    vision_cache_root = (
+        os.getenv("LLM_VISION_CACHE_ROOT", "data/chat_media").strip()
+        or "data/chat_media"
+    )
+    vision_download_timeout_seconds = max(
+        0.1, float(os.getenv("LLM_VISION_DOWNLOAD_TIMEOUT_SECONDS", "10"))
+    )
+    vision_max_image_bytes = max(
+        1024, int(os.getenv("LLM_VISION_MAX_IMAGE_BYTES", str(10 * 1024 * 1024)))
+    )
+    vision_max_pixels = max(1, int(os.getenv("LLM_VISION_MAX_PIXELS", "20000000")))
+    vision_max_dimension = max(64, int(os.getenv("LLM_VISION_MAX_DIMENSION", "2048")))
+    vision_cache_ttl_seconds = max(
+        1.0, float(os.getenv("LLM_VISION_CACHE_TTL_SECONDS", str(6 * 3600)))
+    )
+    vision_cache_capacity_bytes = max(
+        vision_max_image_bytes,
+        int(os.getenv("LLM_VISION_CACHE_CAPACITY_BYTES", str(512 * 1024 * 1024))),
+    )
 
     if all((image_gen_api_base_url, image_gen_api_key, image_gen_model)):
         image_execution_timeout = calculate_image_gen_execution_timeout(
@@ -282,4 +315,12 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         artifact_image_ttl_seconds=artifact_image_ttl_seconds,
         artifact_default_ttl_seconds=artifact_default_ttl_seconds,
         artifact_archive_retention_seconds=artifact_archive_retention_seconds,
+        vision_enabled=vision_enabled,
+        vision_cache_root=vision_cache_root,
+        vision_download_timeout_seconds=vision_download_timeout_seconds,
+        vision_max_image_bytes=vision_max_image_bytes,
+        vision_max_pixels=vision_max_pixels,
+        vision_max_dimension=vision_max_dimension,
+        vision_cache_ttl_seconds=vision_cache_ttl_seconds,
+        vision_cache_capacity_bytes=vision_cache_capacity_bytes,
     )

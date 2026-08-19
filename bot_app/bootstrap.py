@@ -9,6 +9,7 @@ from .application import BotApplication
 from .db_manager import BotDatabase
 from .llm_client import LLMClient
 from .logging_utils import configure_flow_logger
+from .media_store import ChatMediaStore
 from .memory import GroupChatMemory
 from .receiver import GroupMessageReceiver
 from .sender import MessageSender
@@ -26,7 +27,19 @@ def build_application(
 
     configure_flow_logger(settings.flow_log_file)
     db = BotDatabase(settings.db_file)
-    receiver = GroupMessageReceiver(settings, db=db)
+    media_store = None
+    if settings.vision_enabled:
+        media_store = ChatMediaStore(
+            settings.vision_cache_root,
+            timeout_seconds=settings.vision_download_timeout_seconds,
+            max_image_bytes=settings.vision_max_image_bytes,
+            max_pixels=settings.vision_max_pixels,
+            max_dimension=settings.vision_max_dimension,
+            ttl_seconds=settings.vision_cache_ttl_seconds,
+            capacity_bytes=settings.vision_cache_capacity_bytes,
+        )
+        media_store.cleanup()
+    receiver = GroupMessageReceiver(settings, db=db, media_store=media_store)
     sender = MessageSender(bot)
     memory = GroupChatMemory(history_turns=settings.history_turns)
     llm = LLMClient(settings=settings)
