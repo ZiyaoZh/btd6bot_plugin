@@ -23,14 +23,16 @@ def build_multimodal_user_content(
         return text
 
     selected: list[tuple[str, dict[str, Any]]] = []
+    selected_keys: set[str] = set()
     current = _available_images(list(event.get("images", []) or []))
     for index, image in enumerate(
         current[: settings.vision_current_image_limit], start=1
     ):
-        selected.append((f"当前消息图片 {index}", image))
+        _append_unique(selected, selected_keys, f"当前消息图片 {index}", image)
 
     remaining = settings.vision_total_image_limit - len(selected)
     history_limit = min(settings.vision_history_image_limit, max(0, remaining))
+    history_selected = 0
     if history_limit:
         recent = reply_context.get("recent_group_window", [])
         if isinstance(recent, list):
@@ -45,7 +47,37 @@ def build_multimodal_user_content(
                     history.append(
                         (f"群聊历史第 {sequence} 条图片 {image_index}", image)
                     )
-            selected.extend(history[:history_limit])
+            for label, image in history:
+                if len(selected) >= settings.vision_total_image_limit:
+                    break
+                if history_selected >= history_limit:
+                    break
+                if _append_unique(selected, selected_keys, label, image):
+                    history_selected += 1
+
+    remaining = min(
+        settings.vision_total_image_limit - len(selected),
+        history_limit - history_selected,
+    )
+    if remaining:
+        session = reply_context.get("user_session_memory", {})
+        turns = session.get("recent_turns", []) if isinstance(session, dict) else []
+        if isinstance(turns, list):
+            for turn_index, turn in enumerate(reversed(turns), start=1):
+                if remaining <= 0 or not isinstance(turn, dict):
+                    break
+                for image_index, image in enumerate(
+                    _available_images(list(turn.get("images", []) or [])), start=1
+                ):
+                    if _append_unique(
+                        selected,
+                        selected_keys,
+                        f"用户会话前第 {turn_index} 条图片 {image_index}",
+                        image,
+                    ):
+                        remaining -= 1
+                    if remaining <= 0:
+                        break
 
     if not selected:
         return text
@@ -74,3 +106,17 @@ def _available_images(images: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if image.get("processing_status") == "cached" and path.is_file():
             available.append(image)
     return available
+
+
+def _append_unique(
+    selected: list[tuple[str, dict[str, Any]]],
+    selected_keys: set[str],
+    label: str,
+    image: dict[str, Any],
+) -> bool:
+    key = str(image.get("sha256", "") or image.get("cache_path", "") or "")
+    if not key or key in selected_keys:
+        return False
+    selected_keys.add(key)
+    selected.append((label, image))
+    return True

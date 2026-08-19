@@ -24,6 +24,7 @@ class CurrentEventContext(TypedDict):
     identity: CompactIdentityContext
     message_id: str
     image_count: int
+    images: list[dict[str, Any]]
 
 
 class RecentGroupMessageContext(TypedDict, total=False):
@@ -46,10 +47,13 @@ class UserSessionSummaryContext(TypedDict, total=False):
     raw_summary: str
 
 
-class UserSessionTurnContext(TypedDict):
+class UserSessionTurnContext(TypedDict, total=False):
     role: str
     turn_type: str
     text: str
+    message_id: str
+    image_count: int
+    images: list[dict[str, Any]]
 
 
 class UserSessionMemoryContext(TypedDict):
@@ -72,6 +76,7 @@ class ReplyContext(TypedDict):
 
 
 def build_current_event_context(event: EventPayload) -> CurrentEventContext:
+    images = _compact_image_references(event.get("images", []))
     return {
         "event_type": str(event.get("event_type", "") or ""),
         "group_id": str(event.get("group_id", "") or ""),
@@ -86,6 +91,7 @@ def build_current_event_context(event: EventPayload) -> CurrentEventContext:
         "identity": _compact_identity(event.get("identity", {})),
         "message_id": str(event.get("message_id", "") or ""),
         "image_count": len(event.get("images", [])),
+        "images": images,
     }
 
 
@@ -173,11 +179,23 @@ def _parse_memory_message(role: str, content: str) -> UserSessionTurnContext:
 
     if role == "user":
         text = _extract_user_text(parsed_json, content)
-        return {
+        turn: UserSessionTurnContext = {
             "role": "user",
             "turn_type": "user_event",
             "text": text,
         }
+        event = parsed_json.get("event", {}) if isinstance(parsed_json, dict) else {}
+        if isinstance(event, dict):
+            message_id = str(event.get("message_id", "") or "")
+            images = _compact_image_references(event.get("images", []))
+            image_count = max(_safe_int(event.get("image_count", 0)), len(images))
+            if message_id:
+                turn["message_id"] = message_id
+            if image_count:
+                turn["image_count"] = image_count
+            if images:
+                turn["images"] = images
+        return turn
 
     if content.startswith("[历史会话摘要]"):
         return {
@@ -281,3 +299,35 @@ def _normalize_string_list(value: Any) -> list[str]:
         if text:
             result.append(text)
     return result
+
+
+def _compact_image_references(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    allowed_keys = (
+        "segment_index",
+        "media_type",
+        "processing_status",
+        "mime_type",
+        "sha256",
+        "cache_path",
+        "visual_summary",
+        "expires_at",
+    )
+    references: list[dict[str, Any]] = []
+    for image in value:
+        if not isinstance(image, dict):
+            continue
+        reference = {
+            key: image[key] for key in allowed_keys if image.get(key) not in (None, "")
+        }
+        if reference:
+            references.append(reference)
+    return references
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0

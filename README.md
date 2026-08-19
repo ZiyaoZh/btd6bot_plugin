@@ -168,7 +168,7 @@ PYTHONPATH=plugins/btd6bot_plugin python3 -m bot_app.model.vision_probe \
 - `LLM_VISION_HISTORY_IMAGE_LIMIT`: 最近群聊最多提交的图片数，默认 2。
 - `LLM_VISION_TOTAL_IMAGE_LIMIT`: 单次模型请求最多提交的图片总数，默认 4。
 
-现有 assistant/tool 消息和 `tools/tool_choice` 循环保持不变。短期会话记忆目前只记录图片数量，不保存图片正文；视觉摘要和缓存过期后的“上一张图”降级属于后续阶段。
+现有 assistant/tool 消息和 `tools/tool_choice` 循环保持不变。短期会话记忆会保存图片数量及安全媒体引用（消息 ID、段序号、哈希、MIME、缓存路径、状态和可选视觉摘要），不保存源 URL、Base64 或图片正文。后续追问“上一张图”时，装配器按“当前消息、最近群聊、同一用户会话”的顺序，在同一总预算内去重并复用仍有效的缓存；缓存过期时上下文仍保留图片数量和已有视觉摘要作为文本降级，不会重新提交失效文件。200 条群聊总结仍只消费文本和视觉摘要，不附带原图。
 
 ## 产物索引与生命周期
 

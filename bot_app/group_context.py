@@ -98,9 +98,11 @@ def build_recent_group_window(
                         "segment_index",
                         "media_type",
                         "processing_status",
+                        "mime_type",
                         "sha256",
                         "cache_path",
                         "visual_summary",
+                        "expires_at",
                     )
                     if image.get(key) not in (None, "")
                 }
