@@ -22,6 +22,8 @@ class CurrentEventContext(TypedDict):
     bot_mentioned: bool
     mentioned_qqs: list[str]
     identity: CompactIdentityContext
+    message_id: str
+    image_count: int
 
 
 class RecentGroupMessageContext(TypedDict, total=False):
@@ -31,6 +33,8 @@ class RecentGroupMessageContext(TypedDict, total=False):
     cleaned_text: str
     created_at: str
     mention_relation: str
+    image_count: int
+    images: list[dict[str, Any]]
 
 
 class UserSessionSummaryContext(TypedDict, total=False):
@@ -80,6 +84,8 @@ def build_current_event_context(event: EventPayload) -> CurrentEventContext:
             if str(item or "").strip()
         ],
         "identity": _compact_identity(event.get("identity", {})),
+        "message_id": str(event.get("message_id", "") or ""),
+        "image_count": len(event.get("images", [])),
     }
 
 
@@ -119,7 +125,7 @@ def build_user_session_memory_context(
 
     return {
         "summary": summary,
-        "recent_turns": recent_turns[-max(1, int(recent_turn_limit)):],
+        "recent_turns": recent_turns[-max(1, int(recent_turn_limit)) :],
     }
 
 
@@ -230,7 +236,9 @@ def serialize_session_summary(summary: UserSessionSummaryContext) -> str:
         "kind": "session_summary",
         "user_preferences": _normalize_string_list(summary.get("user_preferences", [])),
         "open_loops": _normalize_string_list(summary.get("open_loops", [])),
-        "established_facts": _normalize_string_list(summary.get("established_facts", [])),
+        "established_facts": _normalize_string_list(
+            summary.get("established_facts", [])
+        ),
         "recent_topic": str(summary.get("recent_topic", "") or "").strip(),
         "restrictions": _normalize_string_list(summary.get("restrictions", [])),
         "raw_summary": str(summary.get("raw_summary", "") or "").strip(),
@@ -242,7 +250,10 @@ def _extract_summary_fields(
     content: str, fallback_text: str
 ) -> UserSessionSummaryContext:
     parsed = _try_parse_json_object(content)
-    if not isinstance(parsed, dict) or str(parsed.get("kind", "") or "") != "session_summary":
+    if (
+        not isinstance(parsed, dict)
+        or str(parsed.get("kind", "") or "") != "session_summary"
+    ):
         text = str(fallback_text or "").strip()
         return {
             "recent_topic": text,
@@ -252,7 +263,9 @@ def _extract_summary_fields(
     return {
         "user_preferences": _normalize_string_list(parsed.get("user_preferences", [])),
         "open_loops": _normalize_string_list(parsed.get("open_loops", [])),
-        "established_facts": _normalize_string_list(parsed.get("established_facts", [])),
+        "established_facts": _normalize_string_list(
+            parsed.get("established_facts", [])
+        ),
         "recent_topic": str(parsed.get("recent_topic", "") or "").strip(),
         "restrictions": _normalize_string_list(parsed.get("restrictions", [])),
         "raw_summary": str(parsed.get("raw_summary", "") or "").strip(),

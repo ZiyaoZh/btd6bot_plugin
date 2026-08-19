@@ -7,9 +7,9 @@ from ..context_contracts import (
     serialize_compact_user_event,
 )
 from ..context_manager import ContextManager
-from ..group_context import build_recent_group_window
-from ..memory import GroupChatMemory
+from ..group_context import build_recent_group_window, exclude_message_id
 from ..logging_utils import log_flow
+from ..memory import GroupChatMemory
 from ..protocol import EventPayload
 from ..settings import AppSettings
 from ..tools.base import ToolDependencies
@@ -75,12 +75,13 @@ class ContextAssembler:
         db = self._tool_dependencies.db if self._tool_dependencies is not None else None
         if db is None:
             return []
-        rows = db.get_recent_group_messages(
-            event["group_id"], limit=self._settings.recent_group_window_size
-        )
+        limit = self._settings.recent_group_window_size
+        rows = db.get_recent_group_messages(event["group_id"], limit=limit + 1)
+        current_message_id = str(event.get("message_id", "") or "")
+        rows = exclude_message_id(rows, current_message_id)
         return build_recent_group_window(
             rows,
-            limit=self._settings.recent_group_window_size,
+            limit=limit,
             bot_qq=self._settings.bot_qq,
             bot_name=self._settings.bot_name,
         )

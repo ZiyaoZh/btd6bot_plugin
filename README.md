@@ -147,6 +147,10 @@ PYTHONPATH=plugins/btd6bot_plugin python3 -m bot_app.model.vision_probe \
 
 默认使用仓库 `image_samples/` 中的两张非敏感图片。输出只包含文件路径、MIME、字节数、SHA-256、响应结构、usage、耗时和错误摘要，不包含 API key、Base64 图片或完整请求 payload。三项全部通过时退出码为 `0`；任一项失败时退出码为 `1`，此时不得开启生产识图链路。可用两个 `--image` 参数覆盖样本，用 `--timeout` 和 `--max-attempts` 控制单次超时及尝试次数。
 
+代理门槛通过后，QQ 接收层会从 NcatBot `MessageArray.to_list()` 提取结构化图片元数据，并在渠道事件契约中提供 `message_id` 和 `images`。每张图片包含原消息段位置，以及可用的 URL、文件 ID、文件名、字节数和 `sub_type`；接收层不下载图片、不保存 Base64，也不通过正则解析 CQ 图片码。
+
+图片元数据与消息在同一 SQLite 事务内写入 `message_media`，以消息行和原始段位置保证幂等。纯图片会进入消息处理和最近群聊窗口，历史上下文以“该消息含 N 张图片”占位，并携带不含源 URL 的媒体状态引用；当前消息会按 `message_id` 从历史窗口去重。此阶段仍不下载或缓存图片，也不构造多模态模型请求，因此模型尚不能读取真实像素。
+
 ## 产物索引与生命周期
 
 Agent 产生的可复用文件统一保存在 `data/artifacts/`，不再由各工具长期散落到自己的输出目录：

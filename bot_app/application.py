@@ -14,10 +14,13 @@ from .harness.types import ModelTurnHandler, ModelTurnUpdate
 from .llm_client import LLMClient, LLMRequestError
 from .logging_utils import log_flow
 from .protocol import EventPayload
-from .receiver import GroupMessageReceiver
+from .receiver import (
+    GroupMessageReceiver,
+    has_message_content,
+    redact_event_payload_for_log,
+)
 from .sender import MessageSender
 from .settings import AppSettings
-
 
 MODEL_TURN_MESSAGES_SETTING = "model_turn_messages_enabled"
 BOT_ENABLED_SETTING = "bot_enabled"
@@ -106,11 +109,11 @@ class BotApplication:
             return
 
         text = self._receiver.normalize_text(msg.raw_message or "")
-        if not text:
+        if not has_message_content(text, getattr(msg, "message", None)):
             log_flow(
                 stage="receiver.rejected",
                 trace_id=trace_id,
-                reason="empty text after normalize",
+                reason="empty text and no images after normalize",
             )
             return
 
@@ -132,7 +135,11 @@ class BotApplication:
             return
 
         event = self._receiver.build_event_payload(msg, text)
-        log_flow(stage="receiver.event_payload", trace_id=trace_id, event_payload=event)
+        log_flow(
+            stage="receiver.event_payload",
+            trace_id=trace_id,
+            event_payload=redact_event_payload_for_log(event),
+        )
         await self.process_event(
             event=event,
             trace_id=trace_id,

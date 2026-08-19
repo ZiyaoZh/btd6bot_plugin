@@ -11,6 +11,17 @@ _WHITESPACE_RE = re.compile(r"\s+")
 _CQ_AT_RE = re.compile(r"\[CQ:at,qq=(\d+)\]")
 
 
+def exclude_message_id(
+    rows: list[dict[str, Any]], message_id: str
+) -> list[dict[str, Any]]:
+    normalized_id = str(message_id or "")
+    if not normalized_id:
+        return rows
+    return [
+        row for row in rows if str(row.get("message_id", "") or "") != normalized_id
+    ]
+
+
 def clean_group_message_text(raw_text: str) -> str:
     text = str(raw_text or "")
     text = _CQ_CODE_RE.sub(" ", text)
@@ -49,9 +60,14 @@ def build_recent_group_window(
     window: list[RecentGroupMessageContext] = []
 
     for row in rows:
+        images = list(row.get("images", []) or [])
         cleaned_text = str(row.get("normalized_text", "") or "").strip()
         if not cleaned_text:
-            cleaned_text = clean_group_message_text(str(row.get("raw_message", "") or ""))
+            cleaned_text = clean_group_message_text(
+                str(row.get("raw_message", "") or "")
+            )
+        if not cleaned_text and images:
+            cleaned_text = f"[该消息含 {len(images)} 张图片]"
         if not cleaned_text:
             continue
 
@@ -61,20 +77,36 @@ def build_recent_group_window(
             or str(row.get("user_id", "") or "").strip()
             or "unknown"
         )
-        window.append(
-            {
-                "message_id": str(row.get("message_id", "") or ""),
-                "speaker": speaker,
-                "cleaned_text": cleaned_text,
-                "created_at": str(row.get("created_at", "") or ""),
-                "mention_relation": str(row.get("mention_relation", "") or "").strip()
-                or classify_mention_relation(
-                    str(row.get("raw_message", "") or ""),
-                    bot_qq=bot_qq,
-                    bot_name=bot_name,
-                ),
-            }
-        )
+        item: RecentGroupMessageContext = {
+            "message_id": str(row.get("message_id", "") or ""),
+            "speaker": speaker,
+            "cleaned_text": cleaned_text,
+            "created_at": str(row.get("created_at", "") or ""),
+            "mention_relation": str(row.get("mention_relation", "") or "").strip()
+            or classify_mention_relation(
+                str(row.get("raw_message", "") or ""),
+                bot_qq=bot_qq,
+                bot_name=bot_name,
+            ),
+        }
+        if images:
+            item["image_count"] = len(images)
+            item["images"] = [
+                {
+                    key: image[key]
+                    for key in (
+                        "segment_index",
+                        "media_type",
+                        "processing_status",
+                        "sha256",
+                        "cache_path",
+                        "visual_summary",
+                    )
+                    if image.get(key) not in (None, "")
+                }
+                for image in images
+            ]
+        window.append(item)
 
     trimmed_window = window[-max(1, int(limit)) :]
     for index, item in enumerate(trimmed_window, start=1):

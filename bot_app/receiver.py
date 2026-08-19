@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from typing import Any
 
 from ncatbot.event.qq import GroupMessageEvent
 
 from .db_manager import BotDatabase
-from .protocol import AdminControlPayload, EventPayload
+from .protocol import AdminControlPayload, EventPayload, ImagePayload
 from .settings import AppSettings
-
 
 PROACTIVE_CHAT_ENABLED_SETTING = "proactive_chat_enabled"
 
@@ -100,6 +101,7 @@ class GroupMessageReceiver:
             msg,
             bot_qq=self._settings.bot_qq,
             bot_name=self._settings.bot_name,
+            images=extract_image_payloads(getattr(msg, "message", None)),
         )
 
     def normalize_text(self, raw_text: str) -> str:
@@ -129,7 +131,9 @@ class GroupMessageReceiver:
             "event_type": "group_message",
             "group_id": str(msg.group_id),
             "user_id": str(msg.user_id),
+            "message_id": str(getattr(msg, "message_id", "") or ""),
             "text": text,
+            "images": extract_image_payloads(getattr(msg, "message", None)),
             "bot_mentioned": bot_mentioned,
             "mentioned_qqs": mentioned_qqs,
             "identity": identity,
@@ -183,3 +187,88 @@ class GroupMessageReceiver:
         if t in {"系统指令", "系统指令列表", "管理指令", "管理指令列表"}:
             return "system_commands"
         return ""
+
+
+def extract_image_payloads(message: Any) -> list[ImagePayload]:
+    """Extract ordered image metadata from a NcatBot MessageArray."""
+    if message is None:
+        return []
+
+    to_list = getattr(message, "to_list", None)
+    if callable(to_list):
+        try:
+            segments = to_list()
+        except (AttributeError, TypeError, ValueError):
+            return []
+    elif isinstance(message, (list, tuple)):
+        segments = message
+    else:
+        return []
+
+    images: list[ImagePayload] = []
+    for segment_index, segment in enumerate(segments):
+        segment_type, data = _segment_type_and_data(segment)
+        if segment_type != "image":
+            continue
+
+        image: ImagePayload = {"segment_index": segment_index}
+        _set_text_field(image, "url", data.get("url"))
+        _set_text_field(image, "file_id", data.get("file_id", data.get("file")))
+        _set_text_field(
+            image,
+            "file_name",
+            data.get("file_name", data.get("filename", data.get("name"))),
+        )
+        _set_int_field(image, "file_size", data.get("file_size", data.get("size")))
+        _set_int_field(image, "sub_type", data.get("sub_type"))
+        images.append(image)
+    return images
+
+
+def has_message_content(text: str, message: Any) -> bool:
+    return bool(str(text or "").strip() or extract_image_payloads(message))
+
+
+def redact_event_payload_for_log(event: EventPayload) -> dict[str, Any]:
+    payload: dict[str, Any] = dict(event)
+    images = event.get("images", [])
+    payload["image_count"] = len(images)
+    payload["images"] = [
+        {
+            key: image[key]
+            for key in ("segment_index", "file_size", "sub_type")
+            if key in image
+        }
+        for image in images
+    ]
+    return payload
+
+
+def _segment_type_and_data(segment: Any) -> tuple[str, Mapping[str, Any]]:
+    if isinstance(segment, Mapping):
+        segment_type = str(segment.get("type", "") or "").lower()
+        data = segment.get("data", {})
+        return segment_type, data if isinstance(data, Mapping) else {}
+
+    segment_type = str(getattr(segment, "type", "") or "").lower()
+    if not segment_type:
+        segment_type = type(segment).__name__.lower()
+    data = getattr(segment, "data", None)
+    if isinstance(data, Mapping):
+        return segment_type, data
+    return segment_type, getattr(segment, "__dict__", {})
+
+
+def _set_text_field(image: ImagePayload, key: str, value: Any) -> None:
+    normalized = str(value or "").strip()
+    if normalized:
+        image[key] = normalized  # type: ignore[literal-required]
+
+
+def _set_int_field(image: ImagePayload, key: str, value: Any) -> None:
+    if value in (None, ""):
+        return
+    try:
+        image[key] = int(value)  # type: ignore[literal-required]
+    except (TypeError, ValueError):
+        return

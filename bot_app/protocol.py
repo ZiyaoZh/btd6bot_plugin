@@ -3,7 +3,16 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 
-class EventPayload(TypedDict):
+class ImagePayload(TypedDict, total=False):
+    segment_index: int
+    url: str
+    file_id: str
+    file_name: str
+    file_size: int
+    sub_type: int
+
+
+class _EventPayloadRequired(TypedDict):
     module: str
     event_type: str
     group_id: str
@@ -12,6 +21,11 @@ class EventPayload(TypedDict):
     bot_mentioned: bool
     mentioned_qqs: list[str]
     identity: dict[str, Any]
+
+
+class EventPayload(_EventPayloadRequired, total=False):
+    message_id: str
+    images: list[ImagePayload]
 
 
 class _CommandResultPayloadRequired(TypedDict):
