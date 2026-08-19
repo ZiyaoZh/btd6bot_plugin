@@ -5,6 +5,7 @@ import json
 from ..agent.prompt_manager import PromptManager
 from ..agent.types import ToolCallRecord
 from ..logging_utils import log_flow
+from ..model.multimodal import build_multimodal_user_content
 from ..model.types import ModelGateway, ModelTurn
 from ..protocol import CommandResultPayload
 from .context import ContextAssembler
@@ -53,12 +54,10 @@ class AgentHarness:
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(
-                        {
-                            "task": "respond_to_event",
-                            "reply_context": reply_context,
-                        },
-                        ensure_ascii=False,
+                    "content": build_multimodal_user_content(
+                        event=event,
+                        reply_context=reply_context,
+                        settings=self._context.settings,
                     ),
                 },
             ],

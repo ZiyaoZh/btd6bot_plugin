@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import json
 from dataclasses import dataclass
 from http.client import IncompleteRead, RemoteDisconnected
-import json
 from threading import Lock
 from typing import Any
 from urllib import error, request
@@ -206,7 +208,7 @@ class LLMClient:
                 purpose=purpose,
                 model=model,
                 api_base_url=api_base_url,
-                payload=payload,
+                payload=_redact_multimodal_payload(payload),
             )
 
         body = json.dumps(payload).encode("utf-8")
@@ -371,3 +373,25 @@ class LLMClient:
 
 def _is_retryable_http_status(status_code: int) -> bool:
     return status_code in {408, 409, 425, 429} or status_code >= 500
+
+
+def _redact_multimodal_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    def redact(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: redact(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        if not isinstance(value, str) or not value.startswith("data:image/"):
+            return value
+        header, separator, encoded = value.partition(",")
+        if not separator or ";base64" not in header:
+            return "[redacted image data URL]"
+        try:
+            binary = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError):
+            return "[redacted invalid image data URL]"
+        mime_type = header[5:].split(";", 1)[0]
+        digest = hashlib.sha256(binary).hexdigest()
+        return f"[redacted {mime_type} bytes={len(binary)} sha256={digest}]"
+
+    return redact(payload)

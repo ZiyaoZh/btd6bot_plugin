@@ -120,6 +120,15 @@ class GroupMessageReceiver:
             return
         for image in images:
             result = self._media_store.cache(image)
+            image.update(
+                {
+                    "processing_status": result.status,
+                    "mime_type": result.mime_type,
+                    "sha256": result.sha256,
+                    "cache_path": result.cache_path,
+                    "expires_at": result.expires_at,
+                }
+            )
             self._db.update_message_media_cache(
                 group_id=str(msg.group_id),
                 message_id=str(getattr(msg, "message_id", "") or ""),

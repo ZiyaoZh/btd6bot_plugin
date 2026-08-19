@@ -151,6 +151,8 @@ class BotApplication:
             return
 
         event = self._receiver.build_event_payload(msg, text)
+        if images:
+            event["images"] = images
         log_flow(
             stage="receiver.event_payload",
             trace_id=trace_id,

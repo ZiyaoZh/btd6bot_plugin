@@ -162,7 +162,13 @@ PYTHONPATH=plugins/btd6bot_plugin python3 -m bot_app.model.vision_probe \
 - `LLM_VISION_CACHE_TTL_SECONDS`: 缓存有效期，默认 21,600 秒（6 小时）。
 - `LLM_VISION_CACHE_CAPACITY_BYTES`: 缓存磁盘上限，默认 512 MiB；超限时优先删除最久未使用的文件。
 
-当前阶段只建立安全缓存并回写 `message_media`，尚未向 Chat Completions 提交 `image_url`，所以即使开启开关，模型仍不会读取像素。多模态上下文装配将在下一阶段接入。
+缓存成功的图片会在模型适配边界转换为 Chat Completions 图文 `content`：当前消息图片优先，剩余预算用于最近群聊中的有效缓存，并用“当前消息图片 N”“群聊历史第 N 条图片 N”标签保持语义对应。图片仅在请求内编码为 Base64 data URL，不写入 SQLite；请求日志会将正文替换为 MIME、字节数和 SHA-256 摘要。开关关闭或缓存失效时继续使用原有纯文本 payload。
+
+- `LLM_VISION_CURRENT_IMAGE_LIMIT`: 当前消息最多提交的图片数，默认 4。
+- `LLM_VISION_HISTORY_IMAGE_LIMIT`: 最近群聊最多提交的图片数，默认 2。
+- `LLM_VISION_TOTAL_IMAGE_LIMIT`: 单次模型请求最多提交的图片总数，默认 4。
+
+现有 assistant/tool 消息和 `tools/tool_choice` 循环保持不变。短期会话记忆目前只记录图片数量，不保存图片正文；视觉摘要和缓存过期后的“上一张图”降级属于后续阶段。
 
 ## 产物索引与生命周期
 

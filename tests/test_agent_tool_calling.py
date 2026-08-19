@@ -1870,6 +1870,56 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_multimodal_user_message_survives_tool_call_round_trip(self) -> None:
+        """VX-05: 图片输入与既有原生工具调用消息可共同完成多轮请求。"""
+        registry = ToolRegistry(_runtime())
+        llm = FakeLLM(
+            [_tool_response("list_features"), _assistant_response("我看到了图片")]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "current.png"
+            image_path.write_bytes(b"normalized image")
+            settings = AppSettings(
+                env_file=".env",
+                target_group_id="1000",
+                target_group_ids=("1000",),
+                api_key="test-key",
+                system_prompt="你是测试机器人。",
+                max_tool_rounds=3,
+                vision_enabled=True,
+            )
+            runner = AgentRunner(
+                llm=llm,  # type: ignore[arg-type]
+                memory=GroupChatMemory(history_turns=3),
+                settings=settings,
+                tool_registry=registry,
+                tool_dependencies=_runtime(db=FakeDb()),
+                context_manager=FakeContextManager(),  # type: ignore[arg-type]
+            )
+            event = _event("看看这张图")
+            event["message_id"] = "current"
+            event["images"] = [
+                {
+                    "segment_index": 0,
+                    "processing_status": "cached",
+                    "mime_type": "image/png",
+                    "cache_path": str(image_path),
+                }
+            ]
+
+            response = await runner.run(event, trace_id="vision-tool-trace")
+
+        self.assertEqual(response.text, "我看到了图片")
+        first_content = llm.requests[0]["messages"][-1]["content"]
+        self.assertIsInstance(first_content, list)
+        self.assertEqual(
+            [part["type"] for part in first_content],
+            ["text", "text", "image_url"],
+        )
+        second_messages = llm.requests[1]["messages"]
+        self.assertTrue(any(message["role"] == "assistant" for message in second_messages))
+        self.assertTrue(any(message["role"] == "tool" for message in second_messages))
+
     async def test_ignore_message_tool_suppresses_send(self) -> None:
         registry = ToolRegistry(_runtime())
         llm = FakeLLM([_tool_response("ignore_message", {"reason": "普通闲聊"})])

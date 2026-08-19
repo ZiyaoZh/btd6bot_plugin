@@ -29,6 +29,10 @@ class ContextAssembler:
         self._settings = settings
         self._tool_dependencies = tool_dependencies
 
+    @property
+    def settings(self) -> AppSettings:
+        return self._settings
+
     async def prepare(
         self, event: EventPayload, *, trace_id: str = ""
     ) -> dict[str, object]:

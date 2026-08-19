@@ -64,6 +64,9 @@ class AppSettings:
     vision_max_dimension: int = 2048
     vision_cache_ttl_seconds: float = 6 * 3600.0
     vision_cache_capacity_bytes: int = 512 * 1024 * 1024
+    vision_current_image_limit: int = 4
+    vision_history_image_limit: int = 2
+    vision_total_image_limit: int = 4
 
 
 def _read_prompt_from_file(path: Path) -> str:
@@ -261,6 +264,15 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         vision_max_image_bytes,
         int(os.getenv("LLM_VISION_CACHE_CAPACITY_BYTES", str(512 * 1024 * 1024))),
     )
+    vision_current_image_limit = max(
+        0, int(os.getenv("LLM_VISION_CURRENT_IMAGE_LIMIT", "4"))
+    )
+    vision_history_image_limit = max(
+        0, int(os.getenv("LLM_VISION_HISTORY_IMAGE_LIMIT", "2"))
+    )
+    vision_total_image_limit = max(
+        0, int(os.getenv("LLM_VISION_TOTAL_IMAGE_LIMIT", "4"))
+    )
 
     if all((image_gen_api_base_url, image_gen_api_key, image_gen_model)):
         image_execution_timeout = calculate_image_gen_execution_timeout(
@@ -323,4 +335,7 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         vision_max_dimension=vision_max_dimension,
         vision_cache_ttl_seconds=vision_cache_ttl_seconds,
         vision_cache_capacity_bytes=vision_cache_capacity_bytes,
+        vision_current_image_limit=vision_current_image_limit,
+        vision_history_image_limit=vision_history_image_limit,
+        vision_total_image_limit=vision_total_image_limit,
     )
