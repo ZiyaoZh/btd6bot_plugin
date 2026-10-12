@@ -7,6 +7,7 @@ import sys
 import tempfile
 import types
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -50,44 +51,44 @@ except ModuleNotFoundError:
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT))
 
-from bot_app.agent.runner import AgentRunner  # noqa: E402
-from bot_app.agent.prompt_manager import PromptManager  # noqa: E402
-from bot_app.agent.tool_registry import ToolRegistry  # noqa: E402
-from bot_app.agent.types import AgentResponse, ToolCallRecord  # noqa: E402
-from bot_app.application import BotApplication  # noqa: E402
-from bot_app.artifact_store import ArtifactSource  # noqa: E402
-from bot_app.context_contracts import (  # noqa: E402
+from bot_app.agent.prompt_manager import PromptManager
+from bot_app.agent.runner import AgentRunner
+from bot_app.agent.tool_registry import ToolRegistry
+from bot_app.agent.types import AgentResponse, ToolCallRecord
+from bot_app.application import BotApplication
+from bot_app.artifact_store import ArtifactSource
+from bot_app.context_contracts import (
     build_user_session_memory_context,
     serialize_session_summary,
 )
-from bot_app.context_manager import ContextManager  # noqa: E402
-from bot_app.db_manager import BotDatabase  # noqa: E402
-from bot_app.group_context import (  # noqa: E402
+from bot_app.context_manager import ContextManager
+from bot_app.db_manager import BotDatabase
+from bot_app.group_context import (
     build_message_record_metadata,
     build_recent_group_window,
 )
-from bot_app.harness.image_policy import classify_image_request  # noqa: E402
-from bot_app.harness.policies import GroundingPolicy  # noqa: E402
-from bot_app.harness.sessions import SessionLockManager  # noqa: E402
-from bot_app.harness.tool_executor import ToolExecutor  # noqa: E402
-from bot_app.harness.types import ModelTurnUpdate, ToolInvocation  # noqa: E402
-from bot_app.llm_client import (  # noqa: E402
+from bot_app.harness.image_policy import classify_image_request
+from bot_app.harness.policies import GroundingPolicy
+from bot_app.harness.sessions import SessionLockManager
+from bot_app.harness.tool_executor import ToolExecutor
+from bot_app.harness.types import ModelTurnUpdate, ToolInvocation
+from bot_app.llm_client import (
     LLMClient,
     LLMRequestError,
     LLMResponse,
     LLMToolCall,
 )
-from bot_app.memory import GroupChatMemory  # noqa: E402
-from bot_app.model.types import ModelToolCall  # noqa: E402
-from bot_app.protocol import CommandResultPayload, EventPayload  # noqa: E402
-from bot_app.receiver import GroupMessageReceiver  # noqa: E402
-from bot_app.sender import MessageSender  # noqa: E402
-from bot_app.settings import AppSettings  # noqa: E402
-from bot_app.tools import ToolDependencies  # noqa: E402
-from bot_app.tools.knowledge_service import sanitize_kb_query  # noqa: E402
-from bot_app.tools.web_search_service import parse_duckduckgo_results  # noqa: E402
-from bot_app.tools.social_service import build_summarize_recent_messages_result  # noqa: E402
-from bot_app.tools.subprocess_runner import ProcessResult  # noqa: E402
+from bot_app.memory import GroupChatMemory
+from bot_app.model.types import ModelToolCall
+from bot_app.protocol import CommandResultPayload, EventPayload
+from bot_app.receiver import GroupMessageReceiver
+from bot_app.sender import MessageSender
+from bot_app.settings import AppSettings
+from bot_app.tools import ToolDependencies
+from bot_app.tools.knowledge_service import sanitize_kb_query
+from bot_app.tools.social_service import build_summarize_recent_messages_result
+from bot_app.tools.subprocess_runner import ProcessResult
+from bot_app.tools.web_search_service import parse_duckduckgo_results
 
 
 def _settings() -> AppSettings:
@@ -524,9 +525,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database = BotDatabase(str(Path(temp_dir) / "bot.db"))
-            database.set_group_setting(
-                "1000", "model_turn_messages_enabled", "true"
-            )
+            database.set_group_setting("1000", "model_turn_messages_enabled", "true")
             application = BotApplication(
                 settings=_settings(),
                 receiver=object(),  # type: ignore[arg-type]
@@ -585,9 +584,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(handled)
             self.assertTrue(
-                database.get_group_bool_setting(
-                    "1000", "model_turn_messages_enabled"
-                )
+                database.get_group_bool_setting("1000", "model_turn_messages_enabled")
             )
             self.assertFalse(
                 database.get_group_bool_setting(
@@ -599,9 +596,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             await application._handle_admin_control(msg, trace_id="model-turns-off")
 
             self.assertFalse(
-                database.get_group_bool_setting(
-                    "1000", "model_turn_messages_enabled"
-                )
+                database.get_group_bool_setting("1000", "model_turn_messages_enabled")
             )
 
         self.assertEqual(
@@ -639,9 +634,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             )
 
             restarted_receiver = GroupMessageReceiver(settings, db=database)
-            self.assertFalse(
-                restarted_receiver.is_proactive_chat_enabled("1000")
-            )
+            self.assertFalse(restarted_receiver.is_proactive_chat_enabled("1000"))
             self.assertTrue(restarted_receiver.is_proactive_chat_enabled("1001"))
 
     async def test_admin_start_stop_and_proactive_commands_are_per_group(self) -> None:
@@ -682,9 +675,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertTrue(
-                await application._handle_admin_control(
-                    msg, trace_id="proactive-off"
-                )
+                await application._handle_admin_control(msg, trace_id="proactive-off")
             )
             self.assertFalse(receiver.is_proactive_chat_enabled("1000"))
             self.assertTrue(receiver.is_proactive_chat_enabled("1001"))
@@ -762,9 +753,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             database = BotDatabase(str(Path(temp_dir) / "bot.db"))
             database.set_group_setting("1000", "bot_enabled", "false")
             database.set_group_setting("1000", "proactive_chat_enabled", "false")
-            database.set_group_setting(
-                "1000", "model_turn_messages_enabled", "true"
-            )
+            database.set_group_setting("1000", "model_turn_messages_enabled", "true")
             receiver = GroupMessageReceiver(_settings(), db=database)
             application = BotApplication(
                 settings=_settings(),
@@ -906,7 +895,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             daily_overview.activity_types,  # type: ignore[union-attr]
             ("race", "boss", "odyssey", "daily"),
         )
-        self.assertEqual(classify_image_request("画一张 race car 图片").kind, "creative")  # type: ignore[union-attr]
+        self.assertEqual(
+            classify_image_request("画一张 race car 图片").kind, "creative"
+        )  # type: ignore[union-attr]
         self.assertEqual(
             classify_image_request("画一只猴子参加竞速比赛的卡通图").kind,  # type: ignore[union-attr]
             "creative",
@@ -1314,9 +1305,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                 {"query": "@小污猫 野兽之主数据", "top_n": 3},
                 _event("@小污猫 野兽之主数据"),
             )
-            cleaned_query = (
-                kb_root / "knowledge_docs" / "last_query.txt"
-            ).read_text(encoding="utf-8")
+            cleaned_query = (kb_root / "knowledge_docs" / "last_query.txt").read_text(
+                encoding="utf-8"
+            )
             file_path = search_result["data"]["matched_paths"][0]
             read_result = await registry.execute(
                 "read_game_knowledge_file",
@@ -1336,7 +1327,10 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                 ToolInvocation(
                     id="call_rounds",
                     name="read_game_knowledge_file",
-                    arguments={"file_path": str(kb_root / "knowledge_docs/rounds.md")},
+                    arguments={
+                        "file_path": str(kb_root / "knowledge_docs/rounds.md"),
+                        "max_chars": 350000,
+                    },
                 ),
                 _event("读取完整回合列表"),
             )
@@ -1350,6 +1344,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                     arguments={
                         "file_path": str(kb_root / "knowledge_docs/rounds.md"),
                         "query": "回合列表",
+                        "max_chars": 350000,
                     },
                 ),
                 _event("查询回合列表"),
@@ -1380,7 +1375,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("大师忍者", read_result["data"]["content"])
         self.assertGreater(read_result["data"]["content_chars"], 0)
         self.assertTrue(long_result["ok"])
-        self.assertEqual(long_result["data"]["mode"], "keyword_extract")
+        self.assertEqual(long_result["data"]["mode"], "query_excerpt")
         self.assertGreater(long_result["data"]["content_chars"], 0)
         self.assertTrue(rounds_result["ok"])
         self.assertEqual(rounds_result["data"]["mode"], "full")
@@ -1825,12 +1820,14 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         context_manager = FakeContextManager()
+        db = FakeDb()
+        db.recent_rows[0]["created_at"] = datetime.now(UTC).isoformat()
         runner = AgentRunner(
             llm=llm,  # type: ignore[arg-type]
             memory=GroupChatMemory(history_turns=3),
             settings=_settings(),
             tool_registry=registry,
-            tool_dependencies=_runtime(db=FakeDb()),
+            tool_dependencies=_runtime(db=db),
             context_manager=context_manager,  # type: ignore[arg-type]
         )
 
@@ -1863,7 +1860,7 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                     "message_id": "m1",
                     "speaker": "A",
                     "cleaned_text": "hello",
-                    "created_at": "2026-06-10 10:00:00",
+                    "created_at": db.recent_rows[0]["created_at"],
                     "mention_relation": "none",
                     "sequence": 1,
                 }
@@ -1917,7 +1914,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             ["text", "text", "image_url"],
         )
         second_messages = llm.requests[1]["messages"]
-        self.assertTrue(any(message["role"] == "assistant" for message in second_messages))
+        self.assertTrue(
+            any(message["role"] == "assistant" for message in second_messages)
+        )
         self.assertTrue(any(message["role"] == "tool" for message in second_messages))
 
     async def test_ignore_message_tool_suppresses_send(self) -> None:
@@ -2136,7 +2135,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("activity_brief", Path(result["image_path"]).parts)
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].kind, "activity.brief")
-        self.assertEqual({item.role for item in records[0].files}, {"report", "image", "data"})
+        self.assertEqual(
+            {item.role for item in records[0].files}, {"report", "image", "data"}
+        )
         command = activity_runner.calls[0]
         self.assertEqual(command[command.index("--activity-type") + 1], "odyssey")
         self.assertEqual(command[command.index("--difficulty") + 1], "hard")
@@ -2174,7 +2175,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             ["boss", "daily"],
         )
 
-    async def test_all_activity_overview_uses_one_deterministic_brief_image(self) -> None:
+    async def test_all_activity_overview_uses_one_deterministic_brief_image(
+        self,
+    ) -> None:
         activity_runner = FakeActivityRunner()
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin_root = _create_temp_plugin_root(temp_dir)
@@ -2290,7 +2293,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             _event("生成竞速排行榜图片"),
         )
         self.assertFalse(leaderboard_result["ok"])
-        self.assertEqual(leaderboard_result["data"]["reason"], "use_activity_brief_tool")
+        self.assertEqual(
+            leaderboard_result["data"]["reason"], "use_activity_brief_tool"
+        )
 
         collection_result = await registry.execute(
             "generate_image",
@@ -2326,7 +2331,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(missing_json_result["ok"])
         self.assertIn("结构化快照", missing_json_result["message"])
 
-    async def test_agent_sends_deterministic_activity_brief_without_ai_generation(self) -> None:
+    async def test_agent_sends_deterministic_activity_brief_without_ai_generation(
+        self,
+    ) -> None:
         activity_runner = FakeActivityRunner()
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin_root = _create_temp_plugin_root(temp_dir)
@@ -2359,7 +2366,9 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
                     trace_id="deterministic-race-brief",
                 )
 
-        self.assertEqual([item.name for item in response.tool_calls], ["get_activity_brief_image"])
+        self.assertEqual(
+            [item.name for item in response.tool_calls], ["get_activity_brief_image"]
+        )
         self.assertEqual(response.response_type, "image")
         self.assertIn("activity_brief", Path(response.image_path).parts)
         self.assertEqual(response.text, "当前竞速的地图和塔限制都在图里。")
@@ -2547,14 +2556,14 @@ class AgentToolCallingTests(unittest.IsolatedAsyncioTestCase):
             fp=io.BytesIO(b'{"error":{"message":"invalid request"}}'),
         )
 
-        with patch(
-            "bot_app.llm_client.request.urlopen", side_effect=failure
-        ) as urlopen:
-            with self.assertRaises(LLMRequestError) as raised:
-                await client.chat_completion(
-                    messages=[{"role": "user", "content": "hello"}],
-                    trace_id="non-retryable",
-                )
+        with (
+            patch("bot_app.llm_client.request.urlopen", side_effect=failure) as urlopen,
+            self.assertRaises(LLMRequestError) as raised,
+        ):
+            await client.chat_completion(
+                messages=[{"role": "user", "content": "hello"}],
+                trace_id="non-retryable",
+            )
 
         self.assertFalse(raised.exception.retryable)
         self.assertEqual(raised.exception.status_code, 400)

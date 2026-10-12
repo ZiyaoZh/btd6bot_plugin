@@ -13,6 +13,7 @@ from .media_store import ChatMediaStore
 from .memory import GroupChatMemory
 from .receiver import GroupMessageReceiver
 from .sender import MessageSender
+from .session_store import SessionStore
 from .settings import AppSettings
 from .tools import ToolDependencies
 from .visual_summary import VisualSummaryService
@@ -42,7 +43,12 @@ def build_application(
         media_store.cleanup()
     receiver = GroupMessageReceiver(settings, db=db, media_store=media_store)
     sender = MessageSender(bot)
-    memory = GroupChatMemory(history_turns=settings.history_turns)
+    store = (
+        SessionStore(settings.db_file, retention_days=settings.memory_retention_days)
+        if settings.memory_persistence_enabled
+        else None
+    )
+    memory = GroupChatMemory(history_turns=settings.history_turns, store=store)
     llm = LLMClient(settings=settings)
     visual_summaries = VisualSummaryService(
         llm=llm,
@@ -70,6 +76,7 @@ def build_application(
             settings.artifact_archive_retention_seconds
         ),
     )
+    dependencies.memory = memory
     registry = ToolRegistry(dependencies)
     agent = Agent(
         llm=llm,

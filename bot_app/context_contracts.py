@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, TypedDict
+from datetime import UTC, datetime
+from typing import Any, NotRequired, TypedDict
 
 from .protocol import EventPayload
 
@@ -25,6 +26,8 @@ class CurrentEventContext(TypedDict):
     message_id: str
     image_count: int
     images: list[dict[str, Any]]
+    reply_to_message_id: NotRequired[str]
+    created_at: NotRequired[str]
 
 
 class RecentGroupMessageContext(TypedDict, total=False):
@@ -73,11 +76,12 @@ class ReplyContext(TypedDict):
     user_session_memory: UserSessionMemoryContext
     recent_group_window: list[RecentGroupMessageContext]
     policy_hints: PolicyHintsContext
+    retrieved_memory: NotRequired[list[dict[str, Any]]]
 
 
 def build_current_event_context(event: EventPayload) -> CurrentEventContext:
     images = _compact_image_references(event.get("images", []))
-    return {
+    context: CurrentEventContext = {
         "event_type": str(event.get("event_type", "") or ""),
         "group_id": str(event.get("group_id", "") or ""),
         "user_id": str(event.get("user_id", "") or ""),
@@ -93,10 +97,14 @@ def build_current_event_context(event: EventPayload) -> CurrentEventContext:
         "image_count": len(event.get("images", [])),
         "images": images,
     }
+    if event.get("reply_to_message_id"):
+        context["reply_to_message_id"] = event["reply_to_message_id"]
+    return context
 
 
 def serialize_compact_user_event(event: EventPayload) -> str:
     payload = build_current_event_context(event)
+    payload["created_at"] = datetime.now(UTC).isoformat()
     return json.dumps(
         {
             "kind": "user_event",

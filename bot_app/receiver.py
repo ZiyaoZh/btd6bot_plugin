@@ -168,6 +168,9 @@ class GroupMessageReceiver:
             "group_id": str(msg.group_id),
             "user_id": str(msg.user_id),
             "message_id": str(getattr(msg, "message_id", "") or ""),
+            "reply_to_message_id": extract_reply_message_id(
+                getattr(msg, "message", None)
+            ),
             "text": text,
             "images": extract_image_payloads(getattr(msg, "message", None)),
             "bot_mentioned": bot_mentioned,
@@ -263,6 +266,20 @@ def extract_image_payloads(message: Any) -> list[ImagePayload]:
 
 def has_message_content(text: str, message: Any) -> bool:
     return bool(str(text or "").strip() or extract_image_payloads(message))
+
+
+def extract_reply_message_id(message: Any) -> str:
+    if hasattr(message, "to_list"):
+        segments = message.to_list()
+    elif isinstance(message, (list, tuple)):
+        segments = message
+    else:
+        return ""
+    for segment in segments:
+        kind, data = _segment_type_and_data(segment)
+        if kind == "reply":
+            return str(data.get("id", data.get("message_id", "")) or "")
+    return ""
 
 
 def redact_event_payload_for_log(event: EventPayload) -> dict[str, Any]:

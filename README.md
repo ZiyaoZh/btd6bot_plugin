@@ -25,7 +25,8 @@
 - 会话与数据管理：
 	- 群消息写入 SQLite。
 	- 今日活跃榜、最近消息总结等统计能力。
-	- Agent 短期会话保存在进程内，并按阈值自动压缩，避免长对话无限增长。
+	- Agent 会话按群和用户隔离，默认持久化到现有 SQLite，重启后恢复，并按阈值生成结构化摘要。
+	- 按需召回历史用户消息；用户明确要求保存的偏好、任务和管理员群规则支持来源、更新、过期与删除。
 - 管理控制指令：
 	- 按群启动/终止处理。
 	- 按群开启/关闭主动接话。
@@ -66,6 +67,8 @@ event -> context -> model -> tool call -> validate/execute -> observation
 - `bot_app/agent/`: Agent 对外门面、instructions、工具目录与响应类型。
 - `bot_app/model/`: 模型供应商协议与 OpenAI-compatible Chat Completions adapter。
 - `bot_app/harness/`: Run 循环、状态、会话锁、工具执行器、证据策略和 RunStore。
+- `bot_app/context_budget.py`、`context_selection.py`: 输入预算、证据片段选择与历史裁剪。
+- `bot_app/session_store.py`: 会话快照、历史召回和显式记忆的 SQLite 存储。
 - `bot_app/tools/`: 按功能域维护 tool schema、handler 与 service；外部 CLI、知识库、小游戏等业务逻辑均在该层执行。
 - `btd6_api_processor/`: 活动与榜单数据处理。
 - `btd6_knowledge_base/`: 版本化 Markdown 本地知识库；运行时直接扫描文档目录，不依赖搜索索引数据库。
@@ -73,6 +76,22 @@ event -> context -> model -> tool call -> validate/execute -> observation
 - `prompts/`: 系统提示词和工具选择提示。
 - `data/`: 插件数据库文件。
 - `logs/`: 插件日志输出目录。
+
+## 上下文与记忆
+
+每次主 Agent 模型调用都会计算系统提示、当前消息、历史、图片预留和工具 schema 的合计估算输入；默认预算为 24000 token。文本使用 `o200k_base` 并增加 10% 余量，图片默认预留 2048 token/张；它们是本地估算，不能视为代理模型的实际计费值。部署镜像预热 tokenizer 缓存；不可用时降级到保守的 UTF-8 字节估算。
+
+知识工具默认读取最多 8000 字符：有 `query/keywords` 时选取相关原文并保留标题、表头和文件行号；无查询时从第 1 行分页，使用 `next_line` 继续。显式 `max_chars` 仍可在 `BOT_KNOWLEDGE_MAX_READ_CHARS` 上限内获取长文，但送入模型的 observation 会再次受输入预算限制。Harness 保留原始工具结果，原生 tool call ID 和 provider 字段保持配对。片段外信息不能据此断言不存在，证据不足时应继续读取。
+
+会话超过 12000 字符时尝试摘要，默认保留最近 6 轮；摘要全部字段的序列化总长度默认不超过 1200 字符。保留轮数与 `LLM_HISTORY_TURNS` 对齐，未摘要历史不提前隐藏。摘要格式错误或服务失败时保留原记录、冷却 60 秒，由输入预算选择可用历史；积压历史分批摘要，未处理部分继续保留。
+
+最近群窗口默认最多 10 条、4000 字符，筛选近 24 小时消息并与用户历史按消息 ID 去重。当前附件优先；历史图片仅在视觉追问或显式回复引用时进入请求，引用目标优先于其他历史图片。过期图片仅保留文本元数据/已有视觉摘要。显式引用目前只在取回的群窗口和用户会话中查找，尚未按 ID 查询任意旧消息。
+
+`BOT_MEMORY_PERSISTENCE_ENABLED=true` 时，`BOT_DB_FILE` 增加 Agent 会话和记忆表。自动召回只覆盖当前群当前用户的历史，以及本群管理员设置的共享规则；最多 5 项、3000 字符。`manage_memory` 可以按词查询，或在明确要求时保存、更新、删除记忆。用户记忆不跨群，群共享写入要求事件身份为管理员/群主；内容须逐字引用当前用户消息，助手旧答案不作为已确认事实召回。任务默认有效 7 天，偏好/规则默认 90 天，工具可设置 1–365 天。会话恢复和历史召回默认使用最近 90 天；归档每个群/用户最多保留 400 轮，检索最近 200 轮。
+
+记忆工具先暂存变更，最终回复发送成功后，将会话、归档和记忆变更原子提交。发送失败不会提交；发送成功但持久化失败时保留本进程会话并明确提示未保存，不自动重放记忆写入。关闭持久化开关后保留输入预算和进程内历史，不注册 `manage_memory`；已有 SQLite 数据不会因关开关删除。
+
+配置示例见部署仓库 `.env.example`。行为规范、回归和离线回放见 [tests/README.md](tests/README.md)，设计与评估记录见 [2026-10-12 上下文预算与持久记忆](memory/2026-10-12_context_budget_and_persistent_memory.md)。
 
 ## 启用
 
@@ -163,7 +182,7 @@ PYTHONPATH=plugins/btd6bot_plugin python3 -m bot_app.model.vision_probe \
 - `LLM_VISION_CACHE_TTL_SECONDS`: 缓存有效期，默认 21,600 秒（6 小时）。
 - `LLM_VISION_CACHE_CAPACITY_BYTES`: 缓存磁盘上限，默认 512 MiB；超限时优先删除最久未使用的文件。
 
-缓存成功的图片会在模型适配边界转换为 Chat Completions 图文 `content`：当前消息图片优先，剩余预算用于最近群聊中的有效缓存，并用“当前消息图片 N”“群聊历史第 N 条图片 N”标签保持语义对应。图片仅在请求内编码为 Base64 data URL，不写入 SQLite；请求日志会将正文替换为 MIME、字节数和 SHA-256 摘要。开关关闭或缓存失效时继续使用原有纯文本 payload。
+缓存成功的图片会在模型适配边界转换为 Chat Completions 图文 `content`：当前消息图片优先，只有视觉追问或显式回复引用才会使用历史缓存，引用目标先于其他历史图片，并用“当前消息图片 N”“群聊历史第 N 条图片 N”标签保持语义对应。图片仅在请求内编码为 Base64 data URL，不写入 SQLite；请求日志会将正文替换为 MIME、字节数和 SHA-256 摘要。开关关闭或缓存失效时继续使用原有纯文本 payload。
 
 - `LLM_VISION_CURRENT_IMAGE_LIMIT`: 当前消息最多提交的图片数，默认 4。
 - `LLM_VISION_HISTORY_IMAGE_LIMIT`: 最近群聊最多提交的图片数，默认 2。

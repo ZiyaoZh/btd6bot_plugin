@@ -46,6 +46,11 @@ Conversation memory is committed only after successful delivery. The session
 lock covers generation, delivery, and commit so messages from one session
 cannot reorder the conversation.
 
+If storage fails after delivery, the run ends as `delivered_memory_failed`.
+Delivered conversation remains in process memory; queued explicit mutations
+are discarded and the application reports that memory was not saved. It does
+not reclassify the reply as a generation/delivery failure.
+
 The Harness may publish provider-neutral `ModelTurnUpdate` observations through
 an optional callback. `BotApplication` can use those observations for
 best-effort progress delivery when a group enables model-process messages. The
@@ -79,6 +84,40 @@ The store normalizes managed output under `data/artifacts/`, counts reads,
 moves expired records from `active/` to `archive/`, and deletes archived files
 after the configured retention period. Only indexed active files can be read
 through the Agent tools.
+
+### Context and Memory
+
+`ContextAssembler` combines the current event, scoped session summary/turns,
+recent group messages and bounded recalled memories. It does not inject a
+second copy of the entire conversation. Uncompacted turns remain available
+until summarized; `ContextBudget` selects a bounded working copy for each
+model call, including policy observations and native tool results. Original
+records remain available to policies and delivery. Current instructions,
+schemas, native tool IDs and provider assistant fields are never silently cut.
+
+Budget estimates include schemas and image reserves. Text uses `o200k_base`
+with 10% headroom, falling back to UTF-8 byte counts without a tokenizer.
+Knowledge tools support source-line paging and query excerpts. Generic
+observation excerpts explicitly distinguish internal offsets from source-file
+line numbers. Excerpts must not be used to prove that omitted evidence is absent.
+
+`ContextManager` validates all six summary fields and the serialized output
+size before replacing any history. Failed compaction keeps the original data
+and applies a retry cooldown. Backlogged history is summarized in bounded
+chunks, retaining all unprocessed turns; a single essential input that cannot
+fit is rejected instead of sent to the provider.
+
+`SessionStore` uses the existing SQLite database for session snapshots,
+successful turns, explicit memories and source suppression records. Recall is
+scoped by group and user, with administrator-managed group rules as the only
+shared explicit memory. It uses lexical relevance, provenance and expiration;
+old assistant answers are not recalled as verified facts. The `manage_memory`
+tool queues explicit user statements or deletion requests. Snapshot, turn and
+queued mutations are committed in one SQLite transaction after delivery.
+
+This is a lightweight local memory layer, with no vector service, automatic
+fact extraction or external memory dependency. Details and evaluation limits
+are recorded in [the context report](memory/2026-10-12_context_budget_and_persistent_memory.md).
 
 ## Run Protocol
 

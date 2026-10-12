@@ -4,6 +4,7 @@ import json
 
 from ..agent.prompt_manager import PromptManager
 from ..agent.types import ToolCallRecord
+from ..context_budget import ContextBudget, ContextBudgetExceeded
 from ..logging_utils import log_flow
 from ..model.multimodal import build_multimodal_user_content
 from ..model.types import ModelGateway, ModelTurn
@@ -41,6 +42,10 @@ class AgentHarness:
         self._policy = policy
         self._max_tool_rounds = max(1, int(max_tool_rounds))
         self._max_reply_chars = max(1, int(max_reply_chars))
+        self._budget = ContextBudget(
+            context.settings.context_max_input_tokens,
+            image_tokens=context.settings.context_image_token_reserve,
+        )
 
     async def run(self, request: RunRequest) -> AgentOutcome:
         event = request.event
@@ -87,8 +92,21 @@ class AgentHarness:
             if state.model_calls >= self._max_tool_rounds + 1:
                 return self._finish(state, terminal_reason="model_budget_exhausted")
 
+            try:
+                model_messages = self._budget.fit(
+                    state.messages,
+                    self._tools.schemas,
+                    query=event["text"],
+                    trace_id=request.trace_id,
+                )
+            except ContextBudgetExceeded:
+                return self._finish(
+                    state,
+                    candidate_text="这次需要处理的内容太多，请指定要查的对象或具体问题，我再分段读取。",
+                    terminal_reason="context_budget_exceeded",
+                )
             turn = await self._model.generate(
-                messages=state.messages,
+                messages=model_messages,
                 tools=self._tools.schemas,
                 trace_id=request.trace_id,
             )

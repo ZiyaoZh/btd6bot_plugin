@@ -289,7 +289,33 @@ class BotApplication:
                             trace_id=trace_id,
                             error_type=type(exc).__name__,
                         )
-                await self._agent.commit_turn(event, response, trace_id=trace_id)
+                try:
+                    await self._agent.commit_turn(event, response, trace_id=trace_id)
+                except Exception as exc:  # noqa: BLE001 - delivery succeeded; report persistence separately
+                    self._runs.transition(
+                        trace_id,
+                        "delivered_memory_failed",
+                        error_type=type(exc).__name__,
+                    )
+                    log_flow(
+                        stage="context.commit_failed_after_delivery",
+                        trace_id=trace_id,
+                        error_type=type(exc).__name__,
+                    )
+                    if send_failure_notice:
+                        try:
+                            await self._sender.send_group_text(
+                                group_id=reply_group_id,
+                                text="回复已发送，但本次会话和记忆变更未能保存。需要记住的事项请稍后再告诉我一次。",
+                                at_user_id=at_user_id,
+                            )
+                        except Exception as notice_error:  # noqa: BLE001 - preserve delivered state
+                            log_flow(
+                                stage="context.commit_notice_failed",
+                                trace_id=trace_id,
+                                error_type=type(notice_error).__name__,
+                            )
+                    return
                 self._runs.transition(trace_id, "committed")
         except Exception as exc:
             self._runs.transition(

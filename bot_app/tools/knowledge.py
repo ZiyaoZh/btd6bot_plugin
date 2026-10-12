@@ -24,6 +24,15 @@ def build_knowledge_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
     async def read_game_knowledge_file(
         arguments: dict[str, Any], event: EventPayload
     ) -> CommandResultPayload:
+        arguments = dict(arguments)
+        if not any(
+            arguments.get(key)
+            for key in ("query", "keywords", "max_chars", "start_line")
+        ):
+            arguments["start_line"] = 1
+        arguments.setdefault(
+            "max_chars", min(8000, dependencies.knowledge_max_read_chars)
+        )
         return build_read_game_knowledge_file_result(
             kb_root=dependencies.kb_root,
             arguments=arguments,
@@ -59,7 +68,8 @@ def build_knowledge_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
                 "name": "read_game_knowledge_file",
                 "description": (
                     "读取 search_game_knowledge 返回的知识库 Markdown 文件。"
-                    "提供 query 或 keywords 时优先提取相关章节；不提供时可读取整篇正文。"
+                    "默认最多返回 8000 字符。提供 query/keywords 定位相关证据；"
+                    "start_line 可从原文件指定行继续读取。必要时可显式提高 max_chars 获取完整材料。"
                 ),
                 "parameters": object_schema(
                     {
@@ -79,11 +89,16 @@ def build_knowledge_tools(dependencies: ToolDependencies) -> list[ConcreteTool]:
                         "max_chars": {
                             "type": "integer",
                             "description": (
-                                "最多读取或提取的字符数，默认使用服务端上限 "
+                                "最多读取或提取的字符数，默认 8000，服务端上限 "
                                 f"{dependencies.knowledge_max_read_chars}。"
                             ),
                             "minimum": 500,
                             "maximum": dependencies.knowledge_max_read_chars,
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "从原始 Markdown 文件的指定行开始分页；优先于 query，使用返回的 next_line 继续。",
                         },
                     },
                     required=["file_path"],

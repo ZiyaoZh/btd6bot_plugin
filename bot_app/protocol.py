@@ -32,6 +32,7 @@ class _EventPayloadRequired(TypedDict):
 
 class EventPayload(_EventPayloadRequired, total=False):
     message_id: str
+    reply_to_message_id: str
     images: list[ImagePayload]
 
 

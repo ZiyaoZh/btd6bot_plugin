@@ -6,6 +6,7 @@ from typing import Any
 
 from ..agent.types import ToolHandler, ToolSpec
 from ..artifact_store import ArtifactStore
+from ..memory import GroupChatMemory
 from ..protocol import CommandResultPayload
 
 DEFAULT_RESPONSE_TYPE = "text"
@@ -42,6 +43,7 @@ class ToolDependencies:
     artifact_image_ttl_seconds: float = 7 * 86_400.0
     artifact_default_ttl_seconds: float = 86_400.0
     artifact_archive_retention_seconds: float = 7 * 86_400.0
+    memory: GroupChatMemory | None = None
 
     @classmethod
     def create(
@@ -70,9 +72,7 @@ class ToolDependencies:
         root = plugin_root.resolve()
         resolved_manual_file = _resolve_under_root(root, manual_file)
         default_ttl = max(1.0, float(artifact_default_ttl_seconds))
-        archive_retention = max(
-            0.0, float(artifact_archive_retention_seconds)
-        )
+        archive_retention = max(0.0, float(artifact_archive_retention_seconds))
         resolved_artifact_store = artifact_store or ArtifactStore(
             _resolve_under_root(root, artifact_root),
             default_ttl_seconds=default_ttl,
@@ -86,7 +86,9 @@ class ToolDependencies:
             api_processor_root=root / "btd6_api_processor",
             chat_monkey_root=root / "ChatMonkeyTD",
             subprocess_runner=subprocess_runner,
-            image_gen_api_base_url=str(image_gen_api_base_url or "").strip().rstrip("/"),
+            image_gen_api_base_url=str(image_gen_api_base_url or "")
+            .strip()
+            .rstrip("/"),
             image_gen_api_key=str(image_gen_api_key or "").strip(),
             image_gen_model=str(image_gen_model or "").strip(),
             image_gen_request_timeout=max(1.0, float(image_gen_request_timeout)),

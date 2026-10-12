@@ -31,8 +31,14 @@ class AppSettings:
     db_file: str = "data/bot_data.db"
     flow_log_file: str = "logs/network.log"
     context_compact_max_chars: int = 12000
-    context_compact_keep_recent_turns: int = 10
-    context_compact_summary_max_chars: int = 360
+    context_compact_keep_recent_turns: int = 6
+    context_compact_summary_max_chars: int = 1200
+    context_max_input_tokens: int = 24000
+    context_image_token_reserve: int = 2048
+    context_group_max_chars: int = 4000
+    context_group_max_age_seconds: int = 86400
+    memory_persistence_enabled: bool = True
+    memory_retention_days: int = 90
     context_compact_model: str = ""
     context_compact_api_base_url: str = ""
     context_compact_api_key: str = ""
@@ -210,10 +216,10 @@ def load_settings(env_path: str = ".env") -> AppSettings:
     )
     context_compact_max_chars = int(os.getenv("LLM_CONTEXT_COMPACT_MAX_CHARS", "12000"))
     context_compact_keep_recent_turns = int(
-        os.getenv("LLM_CONTEXT_COMPACT_KEEP_RECENT_TURNS", "10")
+        os.getenv("LLM_CONTEXT_COMPACT_KEEP_RECENT_TURNS", "6")
     )
     context_compact_summary_max_chars = int(
-        os.getenv("LLM_CONTEXT_COMPACT_SUMMARY_MAX_CHARS", "360")
+        os.getenv("LLM_CONTEXT_COMPACT_SUMMARY_MAX_CHARS", "1200")
     )
     context_compact_model = os.getenv("LLM_CONTEXT_COMPACT_MODEL", "").strip()
     context_compact_api_base_url = os.getenv(
@@ -360,6 +366,23 @@ def load_settings(env_path: str = ".env") -> AppSettings:
         context_compact_max_chars=max(1000, context_compact_max_chars),
         context_compact_keep_recent_turns=max(1, context_compact_keep_recent_turns),
         context_compact_summary_max_chars=max(120, context_compact_summary_max_chars),
+        context_max_input_tokens=max(
+            1024, int(os.getenv("LLM_CONTEXT_MAX_INPUT_TOKENS", "24000"))
+        ),
+        context_image_token_reserve=max(
+            1, int(os.getenv("LLM_CONTEXT_IMAGE_TOKEN_RESERVE", "2048"))
+        ),
+        context_group_max_chars=max(
+            500, int(os.getenv("BOT_GROUP_CONTEXT_MAX_CHARS", "4000"))
+        ),
+        context_group_max_age_seconds=max(
+            60, int(os.getenv("BOT_GROUP_CONTEXT_MAX_AGE_SECONDS", "86400"))
+        ),
+        memory_persistence_enabled=os.getenv(
+            "BOT_MEMORY_PERSISTENCE_ENABLED", "true"
+        ).lower()
+        in {"true", "1", "yes", "on"},
+        memory_retention_days=max(1, int(os.getenv("BOT_MEMORY_RETENTION_DAYS", "90"))),
         context_compact_model=context_compact_model,
         context_compact_api_base_url=context_compact_api_base_url,
         context_compact_api_key=context_compact_api_key,

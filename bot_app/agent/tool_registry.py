@@ -18,6 +18,7 @@ from ..tools import (
     fail_result,
     normalize_result,
 )
+from ..tools.session_memory import build_memory_tools
 from .types import ToolHandler, ToolSpec
 
 
@@ -94,6 +95,7 @@ class ToolRegistry:
 
     def _build_tools(self) -> list[ConcreteTool]:
         return [
+            *build_memory_tools(self._dependencies),
             *build_artifact_tools(self._dependencies),
             *build_general_tools(self._dependencies),
             *build_image_tools(self._dependencies),

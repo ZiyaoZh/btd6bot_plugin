@@ -4,13 +4,15 @@ import importlib.util
 import json
 import re
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Iterator
+from typing import Any
 
+from ..context_selection import evidence_excerpt
 from ..protocol import CommandResultPayload, EventPayload
 from .base import fail_result, ok_result
 
@@ -100,9 +102,7 @@ def build_search_game_knowledge_result(
     matched_paths = [str(path) for path in paths]
     candidate_details = normalize_candidate_details(candidate_items)
     top_confidence = (
-        float(candidate_details[0].get("confidence", 0.0))
-        if candidate_details
-        else 0.0
+        float(candidate_details[0].get("confidence", 0.0)) if candidate_details else 0.0
     )
     score_margin = compute_score_margin(candidate_details)
     return ok_result(
@@ -199,6 +199,77 @@ def build_read_game_knowledge_file_result(
             extra_prompt="请说明读取失败并建议更换文件重试。",
         )
 
+    # Keep source line numbers stable for follow-up reads. Full/raw extraction
+    # remains available to callers requesting a sufficiently large max_chars.
+    source_lines = text.splitlines()
+    if "start_line" in arguments:
+        try:
+            start = max(1, int(arguments["start_line"]))
+        except (TypeError, ValueError):
+            return fail_result(
+                module=module,
+                command="read_game_knowledge_file",
+                message="start_line 必须为正整数。",
+            )
+        if start > len(source_lines):
+            return fail_result(
+                module=module,
+                command="read_game_knowledge_file",
+                message="start_line 超出文件末尾。",
+                data={"source_line_count": len(source_lines)},
+            )
+        selected_lines = []
+        used = 0
+        for line in source_lines[start - 1 :]:
+            if used + len(line) + 1 > max_chars:
+                break
+            selected_lines.append(line)
+            used += len(line) + 1
+        if not selected_lines:
+            # An oversized line cannot be paged without losing data. Require a
+            # query (or a larger read) instead of returning a non-advancing cursor.
+            return fail_result(
+                module=module,
+                command="read_game_knowledge_file",
+                message="该行超过本次字符预算，请提供 query 定位行内证据或提高 max_chars。",
+                data={"file_path": str(safe_path), "start_line": start},
+            )
+        next_line = start + len(selected_lines)
+        content = "\n".join(selected_lines)
+        return ok_result(
+            module=module,
+            command="read_game_knowledge_file",
+            data={
+                "file_path": str(safe_path),
+                "content": content,
+                "mode": "page",
+                "start_line": start,
+                "end_line": next_line - 1,
+                "next_line": next_line if next_line <= len(source_lines) else None,
+                "source_line_count": len(source_lines),
+                "content_chars": len(content),
+                "content_truncated": start > 1 or next_line <= len(source_lines),
+            },
+            extra_prompt="这是原始文件的指定行。需要时使用 next_line 继续读取；不要把省略内容视为不存在。",
+        )
+    if keywords_query and len(text) > max_chars:
+        content, ranges = evidence_excerpt(
+            text, f"{raw_keywords_query} {keywords_query}", max_chars
+        )
+        return ok_result(
+            module=module,
+            command="read_game_knowledge_file",
+            data={
+                "file_path": str(safe_path),
+                "content": content,
+                "mode": "query_excerpt",
+                "excerpts": ranges,
+                "source_line_count": len(source_lines),
+                "content_chars": len(content),
+                "content_truncated": True,
+            },
+            extra_prompt="这是按问题选取的原文行，已保留附近标题和表头。必要时用 start_line 或更具体的 query 继续读取。",
+        )
     content = extract_readable_content(text)
     metadata = build_kb_content_metadata(
         content,
@@ -290,6 +361,7 @@ def build_read_game_knowledge_file_result(
             "content_chars": len(content),
             "source_content_chars": source_content_chars,
             "content_truncated": content_truncated,
+            "source_line_count": len(source_lines),
         },
         message="知识库文件读取完成",
         extra_prompt=(
@@ -494,7 +566,9 @@ def extract_keyword_windows(
                 content[window_start:window_end],
                 keywords,
             )
-            windows.append((score, _keyword_weight(lowered_keyword), window_start, window_end))
+            windows.append(
+                (score, _keyword_weight(lowered_keyword), window_start, window_end)
+            )
             start = hit + len(lowered_keyword)
 
     if not windows:
@@ -504,7 +578,10 @@ def extract_keyword_windows(
     selected: list[tuple[int, int]] = []
     current_chars = 0
     for _, _, start, end in windows:
-        if any(not (end < used_start or start > used_end) for used_start, used_end in selected):
+        if any(
+            not (end < used_start or start > used_end)
+            for used_start, used_end in selected
+        ):
             continue
         clipped = content[start:end].strip()
         if not clipped:
@@ -686,7 +763,9 @@ def detect_entity_terms(query: str, *, kb_root: Path) -> list[str]:
     return [term for term in _dedupe_texts(terms) if term not in generic_terms]
 
 
-def prioritize_entity_terms(entity_terms: list[str], *, primary_query: str) -> list[str]:
+def prioritize_entity_terms(
+    entity_terms: list[str], *, primary_query: str
+) -> list[str]:
     primary = str(primary_query or "").strip().lower()
     if not primary:
         return entity_terms
@@ -780,9 +859,7 @@ def load_alias_canonicals(alias_file: Path) -> dict[str, str]:
         key = str(raw_key or "").strip()
         values = raw_values if isinstance(raw_values, list) else [raw_values]
         clean_values = [
-            str(value or "").strip()
-            for value in values
-            if str(value or "").strip()
+            str(value or "").strip() for value in values if str(value or "").strip()
         ]
         cjk_values = [
             value for value in clean_values if re.search(r"[\u4e00-\u9fff]", value)
@@ -857,9 +934,7 @@ def extract_readable_content(text: str) -> str:
         frontmatter_end = normalized.find("\n---\n", 4)
         if frontmatter_end >= 0:
             normalized = normalized[frontmatter_end + 5 :]
-    return "\n".join(
-        line.rstrip() for line in normalized.splitlines() if line.strip()
-    )
+    return "\n".join(line.rstrip() for line in normalized.splitlines() if line.strip())
 
 
 def _knowledge_corpus_dir(kb_root: Path) -> Path:
